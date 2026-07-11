@@ -216,3 +216,21 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Ansible
+*.retry
+.vault_pass
+vault_password_file
+*.vault
+
+# Python
+__pycache__/
+*.py[cod]
+.env
+venv/
+.venv/
+
+# Secrets — never commit these
+*secret*
+*password*
+*api_key*
