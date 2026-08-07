@@ -1,0 +1,19 @@
+# /etc/systemd/system/compliance-check.service
+# Chapter 2, Listing 2-6 — Companion service for compliance-check.timer
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+
+[Unit]
+Description=Compliance Check Service
+Documentation=https://github.com/balaramaa/ansible-aiops-playbook
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/opt/scripts/compliance_check.sh
+StandardOutput=journal
+StandardError=journal
+# Output is captured by journald — query with:
+# journalctl -u compliance-check.service --since "today"

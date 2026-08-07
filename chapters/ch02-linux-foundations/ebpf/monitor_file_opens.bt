@@ -1,0 +1,30 @@
+#!/usr/bin/env bpftrace
+// monitor_file_opens.bt — Chapter 2
+// Monitor all file open events — foundation for unauthorized access detection
+//
+// Author : Balaramakrishna Alti
+// GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+//
+// Usage:
+//   sudo bpftrace chapters/ch02-linux-foundations/ebpf/monitor_file_opens.bt
+//
+// Filter to sensitive paths only:
+//   sudo bpftrace -e 'tracepoint:syscalls:sys_enter_openat
+//   /str(args->filename) != ""/ {
+//       if (str(args->filename) =~ "/etc/.*" ||
+//           str(args->filename) =~ "/root/.*") {
+//           printf("%d %s %s\n", pid, comm, str(args->filename));
+//       }
+//   }'
+
+BEGIN {
+    printf("Monitoring file opens. Ctrl-C to stop.\n");
+    printf("%-6s %-16s %s\n", "PID", "COMM", "FILENAME");
+}
+
+tracepoint:syscalls:sys_enter_openat {
+    printf("%-6d %-16s %s\n",
+        pid,
+        comm,
+        str(args->filename));
+}

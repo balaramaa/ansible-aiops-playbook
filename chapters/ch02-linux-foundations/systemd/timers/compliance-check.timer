@@ -1,0 +1,28 @@
+# /etc/systemd/system/compliance-check.timer
+# Chapter 2, Listing 2-6 — Systemd timer with randomized delay
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Enable and start:
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now compliance-check.timer
+#   sudo systemctl list-timers compliance-check.timer
+
+[Unit]
+Description=Daily Compliance Check Timer
+Documentation=https://github.com/balaramaa/ansible-aiops-playbook
+
+[Timer]
+# Run daily at 2:00 AM
+OnCalendar=*-*-* 02:00:00
+
+# Randomize by up to 30 minutes to prevent thundering herd
+# on large fleets — critical for 1000+ server environments
+RandomizedDelaySec=1800
+
+# Run immediately if last run was missed (e.g., server was off)
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,49 @@
+# /etc/systemd/system/infra-agent.service
+# Chapter 2, Listing 2-5 — Production-grade systemd service unit
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Deploy with Ansible (Chapter 3):
+#   ansible.builtin.template:
+#     src: infra-agent.service.j2
+#     dest: /etc/systemd/system/infra-agent.service
+#     owner: root
+#     group: root
+#     mode: '0644'
+#   notify: daemon-reload
+
+[Unit]
+Description=Infrastructure Monitoring Agent
+Documentation=https://github.com/balaramaa/ansible-aiops-playbook
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=infra-agent
+Group=infra-agent
+WorkingDirectory=/opt/infra-agent
+ExecStart=/opt/infra-agent/bin/agent --config /etc/infra-agent/config.yml
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/log/infra-agent /var/lib/infra-agent
+
+# Resource limits
+LimitNOFILE=65536
+MemoryLimit=512M
+CPUQuota=10%
+
+# Restart policy
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

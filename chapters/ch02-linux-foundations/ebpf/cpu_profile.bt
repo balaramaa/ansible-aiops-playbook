@@ -1,0 +1,18 @@
+#!/usr/bin/env bpftrace
+// cpu_profile.bt — Chapter 2
+// CPU profiling — identifies hot functions for performance optimization
+//
+// Author : Balaramakrishna Alti
+// GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+//
+// Usage:
+//   sudo bpftrace chapters/ch02-linux-foundations/ebpf/cpu_profile.bt
+//   (Run for 30 seconds then Ctrl-C to see flame graph data)
+
+profile:hz:99 {
+    @[kstack] = count();
+}
+
+END {
+    printf("\nTop kernel stacks by CPU samples:\n");
+}
