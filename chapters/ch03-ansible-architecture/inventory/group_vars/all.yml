@@ -1,0 +1,22 @@
+# inventory/group_vars/all.yml
+# Variables applied to ALL hosts in all environments
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+ansible_user: ansible
+ansible_python_interpreter: /usr/bin/python3
+
+# NTP — override per environment if needed
+baseline_ntp_servers:
+  - ntp1.company.com
+  - ntp2.company.com
+  - 0.rhel.pool.ntp.org
+
+# DNS
+dns_servers:
+  - 10.0.0.53
+  - 10.0.0.54
+
+# Common tags for all hosts
+environment_tier: "{{ group_names | select('match', 'prod.*') | list | length > 0 | ternary('production', 'non-production') }}"

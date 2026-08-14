@@ -1,0 +1,29 @@
+# roles/linux_baseline/tasks/auditd.yml
+# Chapter 3 — auditd configuration tasks (imported by main.yml)
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Deploy CIS auditd rules
+  ansible.builtin.copy:
+    src: 99-cis-rhel9.rules
+    dest: /etc/audit/rules.d/99-cis-rhel9.rules
+    owner: root
+    group: root
+    mode: "0640"
+  notify: restart auditd
+  tags: audit
+
+- name: Load auditd rules
+  ansible.builtin.command:
+    cmd: augenrules --load
+  changed_when: true
+  notify: restart auditd
+  tags: audit
+
+- name: Ensure auditd is enabled and running
+  ansible.builtin.service:
+    name: auditd
+    state: started
+    enabled: true
+  tags: audit

@@ -1,0 +1,26 @@
+# roles/linux_baseline/handlers/main.yml
+# Chapter 3 — linux_baseline role handlers
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: restart chronyd
+  ansible.builtin.service:
+    name: chronyd
+    state: restarted
+    enabled: true
+
+- name: reload sshd
+  ansible.builtin.service:
+    name: sshd
+    state: reloaded
+
+- name: restart auditd
+  ansible.builtin.service:
+    name: auditd
+    state: restarted
+
+- name: reload sysctl
+  ansible.builtin.command:
+    cmd: sysctl --system
+  changed_when: true

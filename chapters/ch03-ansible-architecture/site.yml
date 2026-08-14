@@ -1,0 +1,55 @@
+# site.yml — Enterprise-wide baseline playbook
+# Chapter 3, Listing 3-10
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Usage:
+#   ansible-playbook -i inventory/ site.yml                    # All hosts
+#   ansible-playbook -i inventory/ site.yml --limit lab        # Lab only
+#   ansible-playbook -i inventory/ site.yml --check --diff     # Dry run
+#   ansible-playbook -i inventory/ site.yml --tags ssh         # SSH only
+#   ansible-playbook -i inventory/ site.yml --list-hosts       # Preview
+---
+- name: Apply baseline configuration to all managed nodes
+  hosts: all
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Verify Ansible version meets minimum requirement
+      ansible.builtin.assert:
+        that: ansible_version.full is version("2.15", ">=")
+        fail_msg: >
+          Ansible 2.15+ required. Found: {{ ansible_version.full }}.
+          Upgrade with: pip3 install --upgrade ansible-core
+
+    - name: Verify target OS is supported
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "RedHat"
+          - ansible_distribution_major_version | int >= 8
+        fail_msg: >
+          Unsupported OS: {{ ansible_distribution }}
+          {{ ansible_distribution_version }}.
+          Supported: RHEL/Rocky/AlmaLinux 8 or 9.
+
+  roles:
+    - role: linux_baseline
+      tags: baseline
+
+  post_tasks:
+    - name: Verify SSH is still accessible after hardening
+      ansible.builtin.wait_for_connection:
+        timeout: 30
+      tags: [ssh, verify]
+
+    - name: Display baseline application summary
+      ansible.builtin.debug:
+        msg:
+          - "Host    : {{ inventory_hostname }}"
+          - "OS      : {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Kernel  : {{ ansible_kernel }}"
+          - "SELinux : {{ ansible_selinux.status }}"
+          - "Applied : {{ ansible_date_time.iso8601 }}"
+      tags: always

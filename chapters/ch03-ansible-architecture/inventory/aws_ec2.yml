@@ -1,0 +1,53 @@
+# inventory/aws_ec2.yml
+# Chapter 3, Listing 3-5 — AWS EC2 dynamic inventory
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Prerequisites:
+#   ansible-galaxy collection install amazon.aws
+#   pip3 install boto3 botocore
+#   aws configure  (or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)
+#
+# Required EC2 tags (establish this tagging standard across your fleet):
+#   ManagedBy   = ansible
+#   Environment = production | staging | dev
+#   Role        = web | db | app | bastion
+#   Team        = platform | security | devops
+---
+plugin: amazon.aws.aws_ec2
+
+regions:
+  - us-east-1
+  - us-west-2
+  - eu-west-1
+
+filters:
+  instance-state-name: running
+  "tag:ManagedBy": ansible
+
+keyed_groups:
+  - key: tags.Environment
+    prefix: aws_env
+    separator: "_"
+  - key: tags.Role
+    prefix: aws_role
+    separator: "_"
+  - key: tags.Team
+    prefix: aws_team
+    separator: "_"
+  - key: placement.region
+    prefix: aws_region
+    separator: "_"
+  - key: instance_type
+    prefix: aws_type
+    separator: "_"
+
+compose:
+  ansible_host: private_ip_address
+
+# Cache to avoid API rate limits on large fleets
+cache: true
+cache_plugin: jsonfile
+cache_connection: /tmp/aws_inventory_cache
+cache_timeout: 3600

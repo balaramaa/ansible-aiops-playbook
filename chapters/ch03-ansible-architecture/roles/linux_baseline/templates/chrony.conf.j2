@@ -1,0 +1,27 @@
+{# roles/linux_baseline/templates/chrony.conf.j2 #}
+{# Chapter 3 — Chrony NTP configuration template #}
+{# Author: Balaramakrishna Alti #}
+{# GitHub: https://github.com/balaramaa/ansible-aiops-playbook #}
+{# Managed by Ansible — do not edit manually #}
+
+# NTP servers
+{% for server in baseline_ntp_servers %}
+server {{ server }}{% if baseline_ntp_iburst %} iburst{% endif %}
+
+{% endfor %}
+
+# Record the rate at which the system clock gains/losses time
+driftfile /var/lib/chrony/drift
+
+# Allow the system clock to be stepped in the first three updates
+# if its offset is larger than 1 second
+makestep 1.0 3
+
+# Enable kernel synchronization of the real-time clock (RTC)
+rtcsync
+
+# Specify directory for log files
+logdir /var/log/chrony
+
+# Log tracking, measurements, and statistics
+log tracking measurements statistics

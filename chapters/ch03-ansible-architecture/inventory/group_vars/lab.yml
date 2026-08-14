@@ -1,0 +1,18 @@
+# inventory/group_vars/lab.yml
+# Variables applied to lab nodes (from Chapter 1 setup)
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+environment_name: lab
+baseline_selinux_state: enforcing
+patching_window: "Anytime"
+patching_reboot_allowed: true
+compliance_level: cis_level1
+audit_log_retention_days: 30
+
+# Lab-specific: use public NTP since we may not have internal NTP
+baseline_ntp_servers:
+  - 0.rhel.pool.ntp.org
+  - 1.rhel.pool.ntp.org
+  - 2.rhel.pool.ntp.org

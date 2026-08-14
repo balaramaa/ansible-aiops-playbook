@@ -1,0 +1,23 @@
+# roles/linux_baseline/tasks/ssh_hardening.yml
+# Chapter 3 — SSH hardening tasks (imported by main.yml)
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Deploy SSH hardening configuration
+  ansible.builtin.template:
+    src: 99-hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/99-hardening.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: reload sshd
+  tags: ssh
+
+- name: Ensure sshd is enabled and running
+  ansible.builtin.service:
+    name: sshd
+    state: started
+    enabled: true
+  tags: ssh

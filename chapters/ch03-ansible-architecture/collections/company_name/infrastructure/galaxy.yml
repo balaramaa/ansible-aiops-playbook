@@ -1,0 +1,34 @@
+# galaxy.yml — Ansible Collection metadata
+# Chapter 3, Listing 3-12
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+namespace: company_name
+name: infrastructure
+version: 1.0.0
+readme: README.md
+
+description: >
+  Enterprise Linux infrastructure automation collection.
+  Contains roles, modules, and playbooks for baseline
+  configuration, compliance, and security hardening.
+  Part of The Ansible AIOps Playbook (Apress).
+
+authors:
+  - Balaramakrishna Alti <balaramaa@gmail.com>
+
+dependencies:
+  ansible.posix: ">=1.5.0"
+  community.general: ">=7.0.0"
+
+tags:
+  - linux
+  - rhel
+  - compliance
+  - security
+  - aiops
+
+# Build and publish:
+# ansible-galaxy collection build
+# ansible-galaxy collection publish company_name-infrastructure-1.0.0.tar.gz

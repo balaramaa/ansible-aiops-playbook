@@ -1,0 +1,32 @@
+# roles/linux_baseline/meta/main.yml
+# Chapter 3 — linux_baseline role metadata
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+galaxy_info:
+  role_name: linux_baseline
+  author: Balaramakrishna Alti
+  description: >
+    Enterprise Linux baseline configuration role.
+    Applies NTP, SELinux, sysctl, SSH hardening, and auditd
+    configuration aligned to CIS Benchmark Level 1 for RHEL 9/Rocky Linux 9.
+  company: The Ansible AIOps Playbook (Apress)
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions:
+        - "8"
+        - "9"
+  galaxy_tags:
+    - linux
+    - rhel
+    - compliance
+    - cis
+    - security
+    - hardening
+
+dependencies: []
+  # No role dependencies — this is a foundational role
+  # Later roles (ssh_hardening, compliance_baseline) depend on this role

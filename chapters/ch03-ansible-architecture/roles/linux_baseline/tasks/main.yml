@@ -1,0 +1,98 @@
+# roles/linux_baseline/tasks/main.yml
+# Chapter 3 — linux_baseline role main task file
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Include OS-specific variables
+  ansible.builtin.include_vars:
+    file: "{{ ansible_os_family }}.yml"
+  failed_when: false  # Graceful if no OS-specific file exists
+
+- name: Validate role prerequisites
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == "RedHat"
+      - ansible_distribution_major_version | int >= 8
+    fail_msg: >
+      linux_baseline requires RHEL/Rocky/AlmaLinux 8 or 9.
+      Found: {{ ansible_distribution }} {{ ansible_distribution_major_version }}.
+      This role does not support other distributions.
+  tags: always
+
+- name: Install required baseline packages
+  ansible.builtin.dnf:
+    name: "{{ baseline_packages_install }}"
+    state: present
+  tags: packages
+
+- name: Remove insecure and unnecessary packages
+  ansible.builtin.dnf:
+    name: "{{ baseline_packages_remove }}"
+    state: absent
+  tags: packages
+
+- name: Configure NTP with chrony
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  notify: restart chronyd
+  tags: ntp
+
+- name: Ensure chronyd is enabled and running
+  ansible.builtin.service:
+    name: chronyd
+    state: started
+    enabled: true
+  tags: ntp
+
+- name: Apply kernel parameters via sysctl
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-baseline.conf
+  loop: "{{ baseline_sysctl_params | dict2items }}"
+  tags: sysctl
+
+- name: Set SELinux state and policy
+  ansible.posix.selinux:
+    policy: "{{ baseline_selinux_policy }}"
+    state: "{{ baseline_selinux_state }}"
+  tags: selinux
+
+- name: Configure login banner (MOTD)
+  ansible.builtin.copy:
+    content: "{{ baseline_motd_text }}"
+    dest: /etc/motd
+    owner: root
+    group: root
+    mode: "0644"
+  when: baseline_motd_enabled | bool
+  tags: motd
+
+- name: Include SSH hardening tasks
+  ansible.builtin.import_tasks: ssh_hardening.yml
+  tags: ssh
+
+- name: Include auditd configuration tasks
+  ansible.builtin.import_tasks: auditd.yml
+  tags: audit
+
+- name: Record baseline application to compliance file
+  ansible.builtin.lineinfile:
+    path: "{{ baseline_compliance_file }}"
+    line: >
+      baseline_applied={{ ansible_date_time.iso8601 }}
+      host={{ inventory_hostname }}
+      ansible_version={{ ansible_version.full }}
+    create: true
+    owner: root
+    group: root
+    mode: "0444"
+  tags: compliance

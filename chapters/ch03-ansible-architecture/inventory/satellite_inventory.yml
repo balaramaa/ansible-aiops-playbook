@@ -1,0 +1,40 @@
+# inventory/satellite_inventory.yml
+# Chapter 3, Listing 3-4 — Red Hat Satellite dynamic inventory
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Prerequisites:
+#   ansible-galaxy collection install theforeman.foreman
+#   pip3 install requests
+#
+# Usage:
+#   ansible-inventory -i inventory/satellite_inventory.yml --list
+#   ansible-playbook -i inventory/satellite_inventory.yml site.yml
+---
+plugin: theforeman.foreman.foreman
+
+url: https://satellite.company.com
+user: ansible-inventory
+password: "{{ lookup('env', 'SATELLITE_PASSWORD') }}"
+validate_certs: true
+
+group_prefix: satellite_
+want_facts: true
+want_params: true
+
+keyed_groups:
+  - key: foreman.operatingsystem_name | regex_replace(' ', '_')
+    prefix: satellite
+    separator: "_"
+  - key: foreman.content_facet_attributes.lifecycle_environment_name
+    prefix: satellite
+    separator: "_"
+  - key: foreman.host_collections
+    prefix: collection
+    separator: "_"
+
+compose:
+  ansible_host: foreman.ip
+  satellite_env: foreman.content_facet_attributes.lifecycle_environment_name
+  satellite_cv: foreman.content_facet_attributes.content_view_name

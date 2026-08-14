@@ -1,0 +1,78 @@
+# roles/linux_baseline/defaults/main.yml
+# Chapter 3 — linux_baseline role default variables
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Override these in group_vars/ or host_vars/ as needed.
+# These are the LOWEST priority variables — any group_var or host_var wins.
+---
+# NTP configuration
+baseline_ntp_servers:
+  - 0.rhel.pool.ntp.org
+  - 1.rhel.pool.ntp.org
+  - 2.rhel.pool.ntp.org
+
+baseline_ntp_iburst: true
+
+# SELinux configuration
+baseline_selinux_state: enforcing
+baseline_selinux_policy: targeted
+
+# Sysctl kernel parameters (CIS Benchmark Level 1)
+baseline_sysctl_params:
+  # Network — prevent IP spoofing
+  net.ipv4.conf.all.rp_filter: 1
+  net.ipv4.conf.default.rp_filter: 1
+  # SYN cookie protection
+  net.ipv4.tcp_syncookies: 1
+  # Disable IP forwarding (unless this is a router)
+  net.ipv4.ip_forward: 0
+  net.ipv6.conf.all.forwarding: 0
+  # Ignore ICMP broadcasts
+  net.ipv4.icmp_echo_ignore_broadcasts: 1
+  # Disable source routing
+  net.ipv4.conf.all.accept_source_route: 0
+  net.ipv4.conf.default.accept_source_route: 0
+  # Restrict dmesg to root
+  kernel.dmesg_restrict: 1
+  # Disable core dumps
+  fs.suid_dumpable: 0
+  # Randomize virtual address space
+  kernel.randomize_va_space: 2
+
+# Package management
+baseline_packages_install:
+  - chrony
+  - audit
+  - aide
+  - policycoreutils-python-utils
+  - rsyslog
+  - logrotate
+
+baseline_packages_remove:
+  - telnet
+  - rsh
+  - rsh-server
+  - ypserv
+  - ypbind
+  - tftp
+  - tftp-server
+  - talk
+  - talk-server
+
+# Ansible service account
+baseline_ansible_user: ansible
+baseline_ansible_uid: 9999
+baseline_ansible_groups: []
+
+# Motd/banner
+baseline_motd_enabled: true
+baseline_motd_text: |
+  ============================================================
+  AUTHORIZED USE ONLY — All activity is monitored and logged.
+  Unauthorized access is prohibited and will be prosecuted.
+  ============================================================
+
+# Compliance tracking
+baseline_compliance_file: /etc/ansible_managed

@@ -1,0 +1,12 @@
+# inventory/group_vars/production.yml
+# Variables applied to ALL production hosts
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+environment_name: production
+baseline_selinux_state: enforcing
+patching_window: "Sunday 02:00-06:00"
+patching_reboot_allowed: true
+compliance_level: cis_level2
+audit_log_retention_days: 365
