@@ -1,0 +1,24 @@
+Generate an Ansible role to harden SSH on RHEL 9 per CIS Benchmark Level 1.
+
+Requirements:
+- PermitRootLogin no
+- PermitEmptyPasswords no
+- MaxAuthTries 3
+- ClientAliveInterval 300, ClientAliveCountMax 0
+- LogLevel VERBOSE
+- Disable X11Forwarding, AllowAgentForwarding, AllowTcpForwarding
+- NIST-approved KexAlgorithms, MACs, and Ciphers only
+- Write config to /etc/ssh/sshd_config.d/99-hardening.conf (not sshd_config directly)
+- Validate config syntax with sshd -t before reloading
+- Tag all tasks with: ssh, security, cis
+
+Variables to expose (with defaults):
+- ssh_permit_root_login: "no"
+- ssh_max_auth_tries: 3
+- ssh_client_alive_interval: 300
+- ssh_log_level: "VERBOSE"
+
+Do NOT:
+- Modify /etc/ssh/sshd_config directly
+- Use ansible.builtin.command to apply settings
+- Restart sshd (only reload — avoids dropping existing sessions)

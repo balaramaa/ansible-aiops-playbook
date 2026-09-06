@@ -1,0 +1,135 @@
+# .github/workflows/ansible-ai-review.yml
+# Chapter 4, Listing 4-6 — AI-powered playbook review on pull requests
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Setup:
+#   Repository Settings → Secrets → Actions → New secret:
+#   OPENAI_API_KEY     — your OpenAI API key (optional)
+#   ANTHROPIC_API_KEY  — your Anthropic API key (optional)
+#   At least one must be set, or Ollama must be available on the runner.
+---
+name: Ansible AI Playbook Review
+
+on:
+  pull_request:
+    paths:
+      - "roles/**/*.yml"
+      - "roles/**/*.yaml"
+      - "playbooks/**/*.yml"
+      - "site.yml"
+      - "*.yml"
+
+jobs:
+  ansible-lint:
+    runs-on: ubuntu-latest
+    name: ansible-lint (standard checks)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ansible/ansible-lint@v24
+        with:
+          args: "--profile production"
+
+  ai-review:
+    runs-on: ubuntu-latest
+    name: AI Security Review
+    needs: ansible-lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install openai anthropic pyyaml requests
+
+      - name: Find changed Ansible files
+        id: changed
+        run: |
+          FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD \
+            | grep -E "\.(yml|yaml)$" \
+            | grep -vE "^\.github|requirements|molecule|test" \
+            | head -20 \
+            | tr "\n" " ")
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+          echo "Changed Ansible files: $FILES"
+
+      - name: Run AI playbook review
+        if: steps.changed.outputs.files != ''
+        env:
+          OPENAI_API_KEY:     ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY:  ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          REVIEWS_DIR="ai-review-results"
+          mkdir -p "$REVIEWS_DIR"
+          EXIT_CODE=0
+
+          for file in ${{ steps.changed.outputs.files }}; do
+            echo "=== Reviewing: $file ==="
+            python3 chapters/ch04-llm-playbook-generation/scripts/review_playbook.py \
+              --playbook "$file" \
+              --fail-on high \
+              --json > "${REVIEWS_DIR}/$(echo $file | tr '/' '_').json" || EXIT_CODE=$?
+          done
+
+          # Combine all JSON results
+          python3 -c "
+          import json, glob, sys
+          results = []
+          for f in glob.glob('${REVIEWS_DIR}/*.json'):
+              try:
+                  results.append(json.load(open(f)))
+              except: pass
+          print(json.dumps(results, indent=2))
+          " > "${REVIEWS_DIR}/combined.json"
+
+          exit $EXIT_CODE
+
+      - name: Upload AI review results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ai-playbook-review-${{ github.run_number }}
+          path: ai-review-results/
+          retention-days: 30
+
+      - name: Comment review summary on PR
+        if: always() && steps.changed.outputs.files != ''
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            try {
+              const results = JSON.parse(
+                fs.readFileSync('ai-review-results/combined.json', 'utf8')
+              );
+              let summary = '## 🤖 AI Playbook Review Results\n\n';
+              for (const r of results) {
+                const icon = r.approved_for_production ? '✅' : '❌';
+                summary += `${icon} **${r.reviewed_file}** — Score: ${r.score}/100\n`;
+                summary += `> ${r.summary}\n\n`;
+                if (r.issues?.length > 0) {
+                  const critical = r.issues.filter(i => ['critical','high'].includes(i.severity));
+                  if (critical.length > 0) {
+                    summary += `**Critical/High Issues:**\n`;
+                    for (const i of critical) {
+                      summary += `- [${i.severity.toUpperCase()}] ${i.description}\n`;
+                    }
+                  }
+                }
+              }
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: summary
+              });
+            } catch(e) { console.log('Could not post comment:', e.message); }

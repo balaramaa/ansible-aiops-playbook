@@ -1,0 +1,23 @@
+Generate an Ansible role to configure auditd with CIS Benchmark rules on RHEL 9.
+
+Requirements:
+- Install the audit package if not present
+- Deploy CIS audit rules to /etc/audit/rules.d/99-cis.rules
+- Include rules for: identity (/etc/passwd, /etc/shadow, /etc/group, /etc/sudoers),
+  privilege_escalation (setuid, setgid syscalls),
+  ssh_config (/etc/ssh/sshd_config),
+  cron (/etc/cron.d/, /etc/crontab, /var/spool/cron/),
+  modules (insmod, rmmod, modprobe, init_module syscall),
+  perm_mod (chmod, chown, setxattr syscalls),
+  system_locale (sethostname, /etc/hosts)
+- Load rules with: augenrules --load
+- Enable and start auditd service
+- Tag all tasks with: audit, compliance, cis
+
+Variables to expose:
+- auditd_rules_file: /etc/audit/rules.d/99-cis.rules
+- auditd_make_rules_immutable: false  (set -e 2 if true — requires reboot to change)
+
+Do NOT:
+- Use ansible.builtin.shell to modify rules directly
+- Make rules immutable by default (too disruptive for lab)
