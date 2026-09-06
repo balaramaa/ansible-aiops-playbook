@@ -1,0 +1,54 @@
+# roles/cis_rhel9/tasks/main.yml
+# Chapter 5 — CIS RHEL 9 compliance role entry point
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Validate compliance role prerequisites
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == "RedHat"
+      - ansible_distribution_major_version | int >= 9
+    fail_msg: >
+      cis_rhel9 role requires RHEL/Rocky Linux 9+.
+      Found: {{ ansible_distribution }} {{ ansible_distribution_version }}.
+  tags: always
+
+- name: Record compliance run metadata
+  ansible.builtin.set_fact:
+    compliance_run_start: "{{ ansible_date_time.iso8601 }}"
+    compliance_run_id: "CIS-{{ ansible_date_time.epoch }}-{{ inventory_hostname }}"
+  tags: always
+
+- name: Ensure compliance report directory exists
+  ansible.builtin.file:
+    path: "{{ cis_report_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0750"
+  tags: always
+
+- name: "Section 1 — Initial Setup"
+  ansible.builtin.import_tasks: section1_initial_setup.yml
+  tags: [cis, section1]
+
+- name: "Section 2 — Services"
+  ansible.builtin.import_tasks: section2_services.yml
+  tags: [cis, section2]
+
+- name: "Section 3 — Network Configuration"
+  ansible.builtin.import_tasks: section3_network.yml
+  tags: [cis, section3, network]
+
+- name: "Section 4 — Logging and Auditing"
+  ansible.builtin.import_tasks: section4_logging.yml
+  tags: [cis, section4, audit, logging]
+
+- name: "Section 5 — Access, Authentication, Authorization"
+  ansible.builtin.import_tasks: section5_access.yml
+  tags: [cis, section5, ssh, access]
+
+- name: "Section 6 — System Maintenance"
+  ansible.builtin.import_tasks: section6_maintenance.yml
+  tags: [cis, section6]

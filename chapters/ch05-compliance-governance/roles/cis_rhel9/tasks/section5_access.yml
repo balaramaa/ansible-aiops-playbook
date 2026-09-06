@@ -1,0 +1,85 @@
+# roles/cis_rhel9/tasks/section5_access.yml
+# Chapter 5, Listing 5-4 — CIS Section 5: Access Controls
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+# ── CIS 5.1 SSH Server Configuration ────────────────────────────────────────
+
+- name: "CIS 5.1.1 | Ensure permissions on /etc/ssh/sshd_config"
+  ansible.builtin.file:
+    path: /etc/ssh/sshd_config
+    owner: root
+    group: root
+    mode: "0600"
+  tags: [cis, cis_5_1_1, ssh, section5]
+
+- name: "CIS 5.1.7-20 | Deploy SSH hardening configuration"
+  ansible.builtin.template:
+    src: sshd_hardening.conf.j2
+    dest: /etc/ssh/sshd_config.d/99-cis-hardening.conf
+    owner: root
+    group: root
+    mode: "0600"
+    validate: /usr/sbin/sshd -t -f %s
+  notify: reload sshd
+  tags: [cis, cis_5_1_7, cis_5_1_10, cis_5_1_11, cis_5_1_19, cis_5_1_20, ssh, section5]
+
+- name: "CIS 5.1 | Ensure sshd is running and enabled"
+  ansible.builtin.service:
+    name: sshd
+    state: started
+    enabled: true
+  tags: [cis, ssh, section5]
+
+# ── CIS 5.2 PAM Configuration ────────────────────────────────────────────────
+
+- name: "CIS 5.2.1 | Ensure password creation requirements are configured"
+  ansible.builtin.lineinfile:
+    path: /etc/security/pwquality.conf
+    regexp: "^{{ item.key }}"
+    line: "{{ item.key }} = {{ item.value }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { key: minlen,  value: "{{ cis_pass_min_len }}" }
+    - { key: dcredit, value: "-1" }
+    - { key: ucredit, value: "-1" }
+    - { key: ocredit, value: "-1" }
+    - { key: lcredit, value: "-1" }
+  tags: [cis, cis_5_2_1, pam, password, section5]
+
+# ── CIS 5.3 User Accounts ────────────────────────────────────────────────────
+
+- name: "CIS 5.3.1 | Ensure password expiration is 365 days or less"
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: "^PASS_MAX_DAYS"
+    line: "PASS_MAX_DAYS   {{ cis_pass_max_days }}"
+  tags: [cis, cis_5_3_1, password, section5]
+
+- name: "CIS 5.3.2 | Ensure minimum days between password changes"
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: "^PASS_MIN_DAYS"
+    line: "PASS_MIN_DAYS   {{ cis_pass_min_days }}"
+  tags: [cis, cis_5_3_2, password, section5]
+
+- name: "CIS 5.3.3 | Ensure password warning days is 7 or more"
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: "^PASS_WARN_AGE"
+    line: "PASS_WARN_AGE   {{ cis_pass_warn_age }}"
+  tags: [cis, cis_5_3_3, password, section5]
+
+- name: "CIS 5.4.2 | Ensure system accounts are secured"
+  ansible.builtin.shell: |
+    awk -F: '($3 < 1000) {print $1}' /etc/passwd | \
+    grep -v -E '^(root|halt|sync|shutdown)$' | \
+    while read user; do
+      usermod -s /sbin/nologin "$user" 2>/dev/null || true
+    done
+  changed_when: false
+  tags: [cis, cis_5_4_2, users, section5]

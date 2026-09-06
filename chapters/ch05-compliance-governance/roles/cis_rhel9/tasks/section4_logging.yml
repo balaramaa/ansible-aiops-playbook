@@ -1,0 +1,57 @@
+# roles/cis_rhel9/tasks/section4_logging.yml
+# Chapter 5 — CIS Section 4: Logging and Auditing
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: "CIS 4.1 | Ensure auditd is installed"
+  ansible.builtin.dnf:
+    name: audit
+    state: present
+  tags: [cis, cis_4_1, audit, section4]
+
+- name: "CIS 4.1.1 | Configure auditd settings"
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^{{ item.key }}"
+    line: "{{ item.key }} = {{ item.value }}"
+  loop:
+    - { key: max_log_file,              value: "{{ cis_auditd_max_log_file }}" }
+    - { key: max_log_file_action,       value: "{{ cis_auditd_max_log_file_action }}" }
+    - { key: space_left_action,         value: "{{ cis_auditd_space_left_action }}" }
+    - { key: action_mail_acct,          value: "{{ cis_auditd_action_mail_acct }}" }
+    - { key: admin_space_left_action,   value: "{{ cis_auditd_admin_space_left_action }}" }
+  notify: restart auditd
+  tags: [cis, cis_4_1_1, audit, section4]
+
+- name: "CIS 4.1.2 | Deploy CIS audit rules"
+  ansible.builtin.copy:
+    src: audit_rules/99-cis.rules
+    dest: "{{ cis_auditd_rules_file }}"
+    owner: root
+    group: root
+    mode: "0640"
+  notify:
+    - load auditd rules
+    - restart auditd
+  tags: [cis, cis_4_1_2, audit, section4]
+
+- name: "CIS 4.1 | Ensure auditd is enabled and running"
+  ansible.builtin.service:
+    name: auditd
+    state: started
+    enabled: true
+  tags: [cis, audit, section4]
+
+- name: "CIS 4.2.1 | Ensure rsyslog is installed and running"
+  ansible.builtin.dnf:
+    name: rsyslog
+    state: present
+  tags: [cis, cis_4_2_1, logging, section4]
+
+- name: "CIS 4.2.1 | Ensure rsyslog service is enabled"
+  ansible.builtin.service:
+    name: rsyslog
+    state: started
+    enabled: true
+  tags: [cis, cis_4_2_1, logging, section4]

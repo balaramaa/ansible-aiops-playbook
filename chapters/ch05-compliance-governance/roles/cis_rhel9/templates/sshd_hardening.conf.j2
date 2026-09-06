@@ -1,0 +1,40 @@
+{# roles/cis_rhel9/templates/sshd_hardening.conf.j2 #}
+{# Chapter 5 — CIS SSH hardening configuration template #}
+{# Author: Balaramakrishna Alti #}
+{# Managed by Ansible — do not edit manually #}
+{# Deployed to: /etc/ssh/sshd_config.d/99-cis-hardening.conf #}
+{# Generated: {{ ansible_date_time.iso8601 }} #}
+
+# CIS RHEL 9 Benchmark Level 1 — SSH Hardening
+# Compliance run ID: {{ compliance_run_id | default('manual') }}
+
+# ── Authentication ─────────────────────────────────────────────────────────
+# CIS 5.1.10
+PermitRootLogin {{ cis_ssh_permit_root_login }}
+# CIS 5.1.11
+PermitEmptyPasswords {{ cis_ssh_permit_empty_passwords }}
+IgnoreRhosts yes
+HostbasedAuthentication no
+
+# ── Session Limits ─────────────────────────────────────────────────────────
+# CIS 5.1.7
+MaxAuthTries {{ cis_ssh_max_auth_tries }}
+# CIS 5.1.19
+LoginGraceTime {{ cis_ssh_login_grace_time }}
+# CIS 5.1.20
+ClientAliveInterval {{ cis_ssh_client_alive_interval }}
+ClientAliveCountMax {{ cis_ssh_client_alive_count_max }}
+
+# ── Forwarding ─────────────────────────────────────────────────────────────
+# CIS 5.1.6
+X11Forwarding {{ cis_ssh_x11_forwarding }}
+AllowAgentForwarding {{ cis_ssh_allow_agent_forwarding }}
+AllowTcpForwarding {{ cis_ssh_allow_tcp_forwarding }}
+
+# ── Logging ────────────────────────────────────────────────────────────────
+LogLevel {{ cis_ssh_log_level }}
+
+# ── Cryptographic Controls (NIST-approved) ─────────────────────────────────
+KexAlgorithms curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp521,ecdh-sha2-nistp384,ecdh-sha2-nistp256
+MACs hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com
+Ciphers chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr

@@ -1,0 +1,98 @@
+# playbooks/compliance_check.yml
+# Chapter 5, Listing 5-7 — OpenSCAP compliance scan playbook
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Usage:
+#   ansible-playbook -i inventory/ playbooks/compliance_check.yml --limit lab
+#   ansible-playbook -i inventory/ playbooks/compliance_check.yml \
+#     -e "min_compliance_score=95" --limit production
+---
+- name: Run compliance assessment across fleet
+  hosts: "{{ target_hosts | default('all') }}"
+  become: true
+  gather_facts: true
+
+  vars:
+    scap_content: /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
+    scap_profile: xccdf_org.ssgproject.content_profile_cis_server_l1
+    report_dir: /var/log/compliance
+    report_date: "{{ ansible_date_time.date }}"
+    min_compliance_score: "{{ compliance_threshold | default(90) }}"
+
+  tasks:
+    - name: Install OpenSCAP tools
+      ansible.builtin.dnf:
+        name:
+          - openscap-scanner
+          - scap-security-guide
+        state: present
+      tags: scap
+
+    - name: Verify SCAP content is available
+      ansible.builtin.stat:
+        path: "{{ scap_content }}"
+      register: scap_content_stat
+      tags: scap
+
+    - name: Fail if SCAP content is missing
+      ansible.builtin.fail:
+        msg: >
+          SCAP content not found at {{ scap_content }}.
+          Install with: dnf install scap-security-guide
+      when: not scap_content_stat.stat.exists
+      tags: scap
+
+    - name: Create compliance report directory
+      ansible.builtin.file:
+        path: "{{ report_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0750"
+      tags: scap
+
+    - name: Run OpenSCAP compliance scan
+      ansible.builtin.command:
+        cmd: >
+          oscap xccdf eval
+          --profile {{ scap_profile }}
+          --results {{ report_dir }}/results-{{ report_date }}.xml
+          --report {{ report_dir }}/report-{{ report_date }}.html
+          {{ scap_content }}
+      register: scap_result
+      # RC 0: all pass, RC 2: scan complete with failures (normal)
+      failed_when: scap_result.rc not in [0, 2]
+      changed_when: false
+      tags: scap
+
+    - name: Extract compliance score from scan output
+      ansible.builtin.set_fact:
+        compliance_score: >-
+          {{ scap_result.stdout |
+             regex_search('Score:\s+([0-9.]+)', '\1') |
+             first | default('0') | float | round(2) }}
+      tags: scap
+
+    - name: Display compliance results
+      ansible.builtin.debug:
+        msg:
+          - "Host            : {{ inventory_hostname }}"
+          - "Profile         : {{ scap_profile }}"
+          - "Compliance score: {{ compliance_score }}%"
+          - "Threshold       : {{ min_compliance_score }}%"
+          - "Report          : {{ report_dir }}/report-{{ report_date }}.html"
+      tags: [scap, always]
+
+    - name: Assert compliance score meets threshold
+      ansible.builtin.assert:
+        that:
+          - compliance_score | float >= min_compliance_score | float
+        fail_msg: >
+          COMPLIANCE GATE FAILED on {{ inventory_hostname }}:
+          Score {{ compliance_score }}% < threshold {{ min_compliance_score }}%
+          Review report: {{ report_dir }}/report-{{ report_date }}.html
+        success_msg: >
+          COMPLIANCE GATE PASSED: {{ compliance_score }}% >= {{ min_compliance_score }}%
+      tags: [scap, gate]
