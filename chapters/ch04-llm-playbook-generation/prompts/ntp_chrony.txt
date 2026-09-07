@@ -1,0 +1,19 @@
+Generate an Ansible role to configure NTP using chrony on RHEL 9.
+
+Requirements:
+- Install chrony package if not present
+- Deploy /etc/chrony.conf from a Jinja2 template
+- Template accepts a list variable: ntp_servers (default: pool.ntp.org servers)
+- Enable iburst for all servers
+- Enable and start chronyd service
+- Verify time sync after configuration with: chronyc tracking
+- Tag all tasks with: ntp, chrony, section2
+
+Variables to expose (with defaults):
+- ntp_servers: [0.rhel.pool.ntp.org, 1.rhel.pool.ntp.org, 2.rhel.pool.ntp.org]
+- ntp_iburst: true
+
+Do NOT:
+- Use ansible.builtin.command to configure NTP settings
+- Modify /etc/chrony.conf directly (use template module)
+- Use ntpd (deprecated on RHEL 9)

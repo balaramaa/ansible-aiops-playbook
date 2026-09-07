@@ -5,9 +5,8 @@
 // Author : Balaramakrishna Alti
 // GitHub : https://github.com/balaramaa/ansible-aiops-playbook
 //
-// Usage:
-//   sudo bpftrace chapters/ch02-linux-foundations/ebpf/cpu_profile.bt
-//   (Run for 30 seconds then Ctrl-C to see flame graph data)
+// Usage: sudo bpftrace chapters/ch02-linux-foundations/ebpf/cpu_profile.bt
+// Run for 30s then Ctrl-C to see flame graph data
 
 profile:hz:99 {
     @[kstack] = count();

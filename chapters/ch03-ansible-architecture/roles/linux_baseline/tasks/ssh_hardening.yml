@@ -1,8 +1,4 @@
-# roles/linux_baseline/tasks/ssh_hardening.yml
-# Chapter 3 — SSH hardening tasks (imported by main.yml)
-#
-# Author : Balaramakrishna Alti
-# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+# roles/linux_baseline/tasks/ssh_hardening.yml — Chapter 3
 ---
 - name: Deploy SSH hardening configuration
   ansible.builtin.template:

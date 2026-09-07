@@ -1,43 +1,19 @@
-# requirements.yml — Ansible Collection and role requirements
-# Chapter 3
-#
-# Author : Balaramakrishna Alti
-# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
-#
-# Install all requirements:
-#   ansible-galaxy collection install -r requirements.yml
-#   ansible-galaxy role install -r requirements.yml
+# requirements.yml — Chapter 3
 ---
 collections:
-  # Core collections used throughout the book
   - name: ansible.posix
     version: ">=1.5.0"
-
   - name: community.general
     version: ">=7.0.0"
-
   - name: community.crypto
     version: ">=2.10.0"
-
-  # Red Hat Satellite dynamic inventory
   - name: theforeman.foreman
     version: ">=3.0.0"
-
-  # AWS dynamic inventory and automation (Chapter 9)
   - name: amazon.aws
     version: ">=6.0.0"
-
-  # HashiCorp Vault secrets (Chapter 3, 10)
   - name: community.hashi_vault
     version: ">=4.0.0"
-
-  # VMware automation (Chapter 9)
   - name: community.vmware
     version: ">=3.0.0"
-
-  # Red Hat system roles
   - name: redhat.rhel_system_roles
     version: ">=1.20.0"
-
-roles: []
-  # No external role dependencies — all roles are in this repository

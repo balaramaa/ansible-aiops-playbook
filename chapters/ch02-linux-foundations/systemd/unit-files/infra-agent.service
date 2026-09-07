@@ -3,15 +3,6 @@
 #
 # Author : Balaramakrishna Alti
 # GitHub : https://github.com/balaramaa/ansible-aiops-playbook
-#
-# Deploy with Ansible (Chapter 3):
-#   ansible.builtin.template:
-#     src: infra-agent.service.j2
-#     dest: /etc/systemd/system/infra-agent.service
-#     owner: root
-#     group: root
-#     mode: '0644'
-#   notify: daemon-reload
 
 [Unit]
 Description=Infrastructure Monitoring Agent
@@ -28,20 +19,14 @@ Group=infra-agent
 WorkingDirectory=/opt/infra-agent
 ExecStart=/opt/infra-agent/bin/agent --config /etc/infra-agent/config.yml
 ExecReload=/bin/kill -HUP $MAINPID
-
-# Security hardening
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/var/log/infra-agent /var/lib/infra-agent
-
-# Resource limits
 LimitNOFILE=65536
 MemoryLimit=512M
 CPUQuota=10%
-
-# Restart policy
 Restart=on-failure
 RestartSec=10s
 

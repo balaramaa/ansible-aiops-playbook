@@ -5,23 +5,15 @@
 // Author : Balaramakrishna Alti
 // GitHub : https://github.com/balaramaa/ansible-aiops-playbook
 //
-// Usage:
-//   sudo bpftrace chapters/ch02-linux-foundations/ebpf/trace_ssh_commands.bt
-//
-// Output: tab-separated: elapsed_ms | pid | comm | executable
-// Feed this output to the AI anomaly detection pipeline in Chapter 11.
+// Usage: sudo bpftrace chapters/ch02-linux-foundations/ebpf/trace_ssh_commands.bt
 
 BEGIN {
     printf("Tracing SSH session commands. Ctrl-C to stop.\n");
     printf("%-10s %-6s %-20s %s\n", "TIME(ms)", "PID", "COMM", "ARGS");
 }
 
-// Hook into execve — fired for every command execution
 tracepoint:syscalls:sys_enter_execve
 /comm == "sshd" || comm == "bash" || comm == "sh" || comm == "zsh"/ {
     printf("%-10d %-6d %-20s %s\n",
-        elapsed / 1000000,
-        pid,
-        comm,
-        str(args->filename));
+        elapsed / 1000000, pid, comm, str(args->filename));
 }

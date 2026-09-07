@@ -1,0 +1,24 @@
+Generate an Ansible role to manage the ansible service account on RHEL 9.
+
+Requirements:
+- Create user "ansible" with UID 9999 if it does not exist
+- Set shell to /bin/bash
+- Create home directory /home/ansible
+- Add to sudoers with NOPASSWD: ALL using a drop-in file at /etc/sudoers.d/ansible
+  (NOT by editing /etc/sudoers directly)
+- Create ~/.ssh directory with mode 0700, owned by ansible:ansible
+- Deploy authorized_keys from a variable: ansible_public_keys (list of strings)
+  with mode 0600
+- Lock the password (no password-based login — key-based auth only)
+- Tag all tasks with: users, security, ansible, section5
+
+Variables to expose (with defaults):
+- ansible_service_user: ansible
+- ansible_service_uid: 9999
+- ansible_public_keys: []  (list of SSH public key strings)
+- ansible_sudo_nopasswd: true
+
+Do NOT:
+- Use ansible.builtin.shell to add sudoers entries
+- Create the authorized_keys file if ansible_public_keys is empty
+- Set a password for the account

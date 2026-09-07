@@ -6,14 +6,11 @@
 
 [Unit]
 Description=Compliance Check Service
-Documentation=https://github.com/balaramaa/ansible-aiops-playbook
 After=network-online.target
 
 [Service]
 Type=oneshot
 User=root
-ExecStart=/opt/scripts/compliance_check.sh
+ExecStart=/usr/bin/bash -c "aureport --summary > /tmp/audit_report_$(date +%Y%m%d).txt 2>&1"
 StandardOutput=journal
 StandardError=journal
-# Output is captured by journald — query with:
-# journalctl -u compliance-check.service --since "today"

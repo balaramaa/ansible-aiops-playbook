@@ -1,8 +1,4 @@
-# roles/linux_baseline/handlers/main.yml
-# Chapter 3 — linux_baseline role handlers
-#
-# Author : Balaramakrishna Alti
-# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+# roles/linux_baseline/handlers/main.yml — Chapter 3
 ---
 - name: restart chronyd
   ansible.builtin.service:
