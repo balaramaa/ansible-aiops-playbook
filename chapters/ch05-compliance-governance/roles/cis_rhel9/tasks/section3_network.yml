@@ -1,0 +1,142 @@
+# roles/cis_rhel9/tasks/section3_network.yml
+# Chapter 5 — CIS Section 3: Network Configuration
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+
+# ── CIS 3.1 Disable Unused Network Protocols ─────────────────────────────────
+
+- name: "CIS 3.1.1 | Ensure IPv6 is disabled if not required"
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/cis-ipv6.conf
+    content: |
+      options ipv6 disable=1
+    owner: root
+    group: root
+    mode: "0644"
+  when: not (ipv6_required | default(false) | bool)
+  tags: [cis, cis_3_1_1, network, section3]
+
+- name: "CIS 3.1.2 | Ensure wireless interfaces are disabled"
+  ansible.builtin.command:
+    cmd: nmcli radio all off
+  changed_when: false
+  failed_when: false
+  tags: [cis, cis_3_1_2, network, section3]
+
+# ── CIS 3.2 Network Parameters (Host Only) ───────────────────────────────────
+
+- name: "CIS 3.2.x | Apply network sysctl parameters"
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-network.conf
+  loop: "{{ cis_sysctl_network | dict2items }}"
+  tags: [cis, cis_3_2, sysctl, network, section3]
+
+# ── CIS 3.3 Network Parameters (Host and Router) ─────────────────────────────
+
+- name: "CIS 3.3.1 | Ensure source routed packets are not accepted"
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: "0"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-network.conf
+  loop:
+    - net.ipv4.conf.all.accept_source_route
+    - net.ipv4.conf.default.accept_source_route
+    - net.ipv6.conf.all.accept_source_route
+    - net.ipv6.conf.default.accept_source_route
+  tags: [cis, cis_3_3_1, sysctl, network, section3]
+
+- name: "CIS 3.3.2 | Ensure ICMP redirects are not accepted"
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: "0"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-network.conf
+  loop:
+    - net.ipv4.conf.all.accept_redirects
+    - net.ipv4.conf.default.accept_redirects
+    - net.ipv6.conf.all.accept_redirects
+    - net.ipv6.conf.default.accept_redirects
+  tags: [cis, cis_3_3_2, sysctl, network, section3]
+
+- name: "CIS 3.3.4 | Ensure suspicious packets are logged"
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: "1"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-network.conf
+  loop:
+    - net.ipv4.conf.all.log_martians
+    - net.ipv4.conf.default.log_martians
+  tags: [cis, cis_3_3_4, sysctl, network, section3]
+
+- name: "CIS 3.3.5 | Ensure broadcast ICMP requests are ignored"
+  ansible.posix.sysctl:
+    name: net.ipv4.icmp_echo_ignore_broadcasts
+    value: "1"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-network.conf
+  tags: [cis, cis_3_3_5, sysctl, network, section3]
+
+- name: "CIS 3.3.6 | Ensure bogus ICMP responses are ignored"
+  ansible.posix.sysctl:
+    name: net.ipv4.icmp_ignore_bogus_error_responses
+    value: "1"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-network.conf
+  tags: [cis, cis_3_3_6, sysctl, network, section3]
+
+- name: "CIS 3.3.7 | Ensure reverse path filtering is enabled"
+  ansible.posix.sysctl:
+    name: "{{ item }}"
+    value: "1"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-network.conf
+  loop:
+    - net.ipv4.conf.all.rp_filter
+    - net.ipv4.conf.default.rp_filter
+  tags: [cis, cis_3_3_7, sysctl, network, section3]
+
+- name: "CIS 3.3.8 | Ensure TCP SYN cookies are enabled"
+  ansible.posix.sysctl:
+    name: net.ipv4.tcp_syncookies
+    value: "1"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-network.conf
+  tags: [cis, cis_3_3_8, sysctl, network, section3]
+
+# ── CIS 3.4 Firewall Configuration ───────────────────────────────────────────
+
+- name: "CIS 3.4.1 | Ensure firewalld is installed"
+  ansible.builtin.dnf:
+    name: firewalld
+    state: present
+  tags: [cis, cis_3_4_1, firewall, section3]
+
+- name: "CIS 3.4.1 | Ensure firewalld is enabled and running"
+  ansible.builtin.service:
+    name: firewalld
+    state: started
+    enabled: true
+  tags: [cis, cis_3_4_1, firewall, section3]
+
+- name: "CIS 3.4.2 | Ensure SSH is permitted through firewall"
+  ansible.posix.firewalld:
+    service: ssh
+    permanent: true
+    state: enabled
+    immediate: true
+  tags: [cis, cis_3_4_2, firewall, section3]

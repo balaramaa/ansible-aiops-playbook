@@ -1,0 +1,132 @@
+# roles/cis_rhel9/tasks/section2_services.yml
+# Chapter 5 — CIS Section 2: Services
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+
+# ── CIS 2.1 Configure Time Synchronization ───────────────────────────────────
+
+- name: "CIS 2.1.1 | Ensure time synchronization is in use (chrony)"
+  ansible.builtin.dnf:
+    name: chrony
+    state: present
+  tags: [cis, cis_2_1_1, ntp, section2]
+
+- name: "CIS 2.1.2 | Ensure chrony is configured with authoritative time servers"
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: restart chronyd
+  tags: [cis, cis_2_1_2, ntp, section2]
+
+- name: "CIS 2.1.2 | Ensure chronyd is running and enabled"
+  ansible.builtin.service:
+    name: chronyd
+    state: started
+    enabled: true
+  tags: [cis, cis_2_1_2, ntp, section2]
+
+# ── CIS 2.2 Remove Special Purpose Services ──────────────────────────────────
+
+- name: "CIS 2.2.x | Remove insecure and unnecessary packages"
+  ansible.builtin.dnf:
+    name: "{{ cis_packages_remove }}"
+    state: absent
+  tags: [cis, cis_2_2, packages, section2]
+
+- name: "CIS 2.2.1 | Ensure X11 server components are not installed"
+  ansible.builtin.dnf:
+    name:
+      - xorg-x11-server-common
+      - xorg-x11-server-Xorg
+    state: absent
+  tags: [cis, cis_2_2_1, packages, section2]
+
+- name: "CIS 2.2.2 | Ensure Avahi daemon is not installed"
+  ansible.builtin.dnf:
+    name: avahi
+    state: absent
+  tags: [cis, cis_2_2_2, packages, section2]
+
+- name: "CIS 2.2.3 | Ensure CUPS is not installed"
+  ansible.builtin.dnf:
+    name: cups
+    state: absent
+  tags: [cis, cis_2_2_3, packages, section2]
+
+- name: "CIS 2.2.4 | Ensure DHCP server is not installed"
+  ansible.builtin.dnf:
+    name: dhcp-server
+    state: absent
+  tags: [cis, cis_2_2_4, packages, section2]
+
+- name: "CIS 2.2.5 | Ensure DNS server is not installed"
+  ansible.builtin.dnf:
+    name: bind
+    state: absent
+  tags: [cis, cis_2_2_5, packages, section2]
+
+- name: "CIS 2.2.6 | Ensure FTP server is not installed"
+  ansible.builtin.dnf:
+    name: vsftpd
+    state: absent
+  tags: [cis, cis_2_2_6, packages, section2]
+
+- name: "CIS 2.2.7 | Ensure LDAP server is not installed"
+  ansible.builtin.dnf:
+    name: openldap-servers
+    state: absent
+  tags: [cis, cis_2_2_7, packages, section2]
+
+- name: "CIS 2.2.8 | Ensure NFS is not installed"
+  ansible.builtin.dnf:
+    name: nfs-utils
+    state: absent
+  failed_when: false  # May be required by some environments
+  tags: [cis, cis_2_2_8, packages, section2]
+
+- name: "CIS 2.2.9 | Ensure HTTP server (Apache) is not installed"
+  ansible.builtin.dnf:
+    name: httpd
+    state: absent
+  failed_when: false  # May be intentionally installed
+  tags: [cis, cis_2_2_9, packages, section2]
+
+- name: "CIS 2.2.10 | Ensure Samba is not installed"
+  ansible.builtin.dnf:
+    name: samba
+    state: absent
+  tags: [cis, cis_2_2_10, packages, section2]
+
+- name: "CIS 2.2.12 | Ensure mail transfer agents are configured local-only"
+  ansible.builtin.lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: "^inet_interfaces"
+    line: "inet_interfaces = loopback-only"
+  when: ansible_facts.packages['postfix'] is defined
+  notify: restart postfix
+  tags: [cis, cis_2_2_12, mail, section2]
+
+# ── CIS 2.3 Ensure Non-Essential Services Are Not Installed ──────────────────
+
+- name: "CIS 2.3 | Ensure telnet client is not installed"
+  ansible.builtin.dnf:
+    name: telnet
+    state: absent
+  tags: [cis, cis_2_3, packages, section2]
+
+- name: "CIS 2.3 | Ensure LDAP client is not installed"
+  ansible.builtin.dnf:
+    name: openldap-clients
+    state: absent
+  tags: [cis, cis_2_3, packages, section2]
+
+- name: "CIS 2.3 | Ensure FTP client is not installed"
+  ansible.builtin.dnf:
+    name: ftp
+    state: absent
+  tags: [cis, cis_2_3, packages, section2]

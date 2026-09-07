@@ -1,0 +1,191 @@
+# roles/cis_rhel9/tasks/section1_initial_setup.yml
+# Chapter 5 — CIS Section 1: Initial Setup
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+
+# ── CIS 1.1 Filesystem Configuration ─────────────────────────────────────────
+
+- name: "CIS 1.1.1.x | Disable unused filesystem modules"
+  ansible.builtin.copy:
+    dest: "/etc/modprobe.d/cis-{{ item }}.conf"
+    content: |
+      install {{ item }} /bin/true
+      blacklist {{ item }}
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ cis_modules_disable }}"
+  tags: [cis, cis_1_1_1, filesystems, section1]
+
+- name: "CIS 1.1.2.x | Ensure /tmp is configured with nodev,nosuid,noexec"
+  ansible.builtin.mount:
+    path: /tmp
+    src: tmpfs
+    fstype: tmpfs
+    opts: "defaults,nodev,nosuid,noexec"
+    state: mounted
+  tags: [cis, cis_1_1_2, filesystems, section1]
+
+# ── CIS 1.2 Software Updates ──────────────────────────────────────────────────
+
+- name: "CIS 1.2.1 | Ensure GPG keys are configured for package manager"
+  ansible.builtin.command:
+    cmd: rpm -q gpg-pubkey
+  register: gpg_check
+  changed_when: false
+  failed_when: gpg_check.rc != 0
+  tags: [cis, cis_1_2_1, packages, section1]
+
+- name: "CIS 1.2.2 | Ensure package manager repositories are configured"
+  ansible.builtin.command:
+    cmd: dnf repolist
+  register: repo_check
+  changed_when: false
+  tags: [cis, cis_1_2_2, packages, section1]
+
+# ── CIS 1.3 Filesystem Integrity ─────────────────────────────────────────────
+
+- name: "CIS 1.3.1 | Ensure AIDE is installed"
+  ansible.builtin.dnf:
+    name: aide
+    state: present
+  tags: [cis, cis_1_3_1, aide, section1]
+
+- name: "CIS 1.3.1 | Initialize AIDE database if not present"
+  ansible.builtin.command:
+    cmd: aide --init
+    creates: /var/lib/aide/aide.db.gz
+  register: aide_init
+  async: 300
+  poll: 10
+  tags: [cis, cis_1_3_1, aide, section1]
+
+- name: "CIS 1.3.1 | Move AIDE database into place"
+  ansible.builtin.copy:
+    src: /var/lib/aide/aide.db.new.gz
+    dest: /var/lib/aide/aide.db.gz
+    remote_src: true
+    mode: "0600"
+  when:
+    - aide_init.changed
+    - aide_init.rc is defined and aide_init.rc == 0
+  tags: [cis, cis_1_3_1, aide, section1]
+
+- name: "CIS 1.3.2 | Configure AIDE to run on schedule via cron"
+  ansible.builtin.cron:
+    name: "CIS 1.3.2 AIDE daily check"
+    minute: "0"
+    hour: "5"
+    job: "/usr/sbin/aide --check | mail -s 'AIDE Integrity Check' root"
+    user: root
+    state: present
+  tags: [cis, cis_1_3_2, aide, section1]
+
+# ── CIS 1.4 Secure Boot ───────────────────────────────────────────────────────
+
+- name: "CIS 1.4.1 | Ensure permissions on bootloader config are configured"
+  ansible.builtin.file:
+    path: /boot/grub2/grub.cfg
+    owner: root
+    group: root
+    mode: "0600"
+  failed_when: false  # May not exist in all environments
+  tags: [cis, cis_1_4_1, bootloader, section1]
+
+# ── CIS 1.5 Additional Process Hardening ─────────────────────────────────────
+
+- name: "CIS 1.5.1 | Ensure core dump storage is disabled"
+  ansible.builtin.lineinfile:
+    path: /etc/systemd/coredump.conf
+    regexp: "^#?Storage="
+    line: "Storage=none"
+    create: true
+    mode: "0644"
+  notify: reload sysctl
+  tags: [cis, cis_1_5_1, coredump, section1]
+
+- name: "CIS 1.5.1 | Ensure core dump backtraces are disabled"
+  ansible.builtin.lineinfile:
+    path: /etc/systemd/coredump.conf
+    regexp: "^#?ProcessSizeMax="
+    line: "ProcessSizeMax=0"
+  tags: [cis, cis_1_5_1, coredump, section1]
+
+- name: "CIS 1.5.2 | Ensure address space layout randomization is enabled"
+  ansible.posix.sysctl:
+    name: kernel.randomize_va_space
+    value: "2"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-section1.conf
+  tags: [cis, cis_1_5_2, sysctl, section1]
+
+- name: "CIS 1.5.3 | Ensure suid_dumpable is disabled"
+  ansible.posix.sysctl:
+    name: fs.suid_dumpable
+    value: "0"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-section1.conf
+  tags: [cis, cis_1_5_3, sysctl, section1]
+
+# ── CIS 1.6 Mandatory Access Control (SELinux) ───────────────────────────────
+
+- name: "CIS 1.6.1 | Ensure SELinux is installed"
+  ansible.builtin.dnf:
+    name:
+      - libselinux
+      - policycoreutils-python-utils
+    state: present
+  tags: [cis, cis_1_6_1, selinux, section1]
+
+- name: "CIS 1.6.1 | Ensure SELinux is not disabled in bootloader"
+  ansible.builtin.replace:
+    path: /etc/default/grub
+    regexp: '(selinux=0|enforcing=0)'
+    replace: ''
+  tags: [cis, cis_1_6_1, selinux, section1]
+
+- name: "CIS 1.6.1 | Ensure SELinux state is enforcing"
+  ansible.posix.selinux:
+    policy: "{{ cis_selinux_policy }}"
+    state: "{{ cis_selinux_state }}"
+  tags: [cis, cis_1_6_1, selinux, section1]
+
+# ── CIS 1.7 Warning Banners ───────────────────────────────────────────────────
+
+- name: "CIS 1.7.1 | Configure /etc/motd"
+  ansible.builtin.copy:
+    dest: /etc/motd
+    content: |
+      ============================================================
+      AUTHORIZED USE ONLY — All activity is monitored and logged.
+      Unauthorized access is prohibited and will be prosecuted.
+      Managed by Ansible — CIS RHEL 9 Benchmark Level 1
+      ============================================================
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [cis, cis_1_7_1, banners, section1]
+
+- name: "CIS 1.7.2 | Configure /etc/issue"
+  ansible.builtin.copy:
+    dest: /etc/issue
+    content: |
+      Authorized use only. All activity may be monitored and reported.
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [cis, cis_1_7_2, banners, section1]
+
+- name: "CIS 1.7.3 | Configure /etc/issue.net"
+  ansible.builtin.copy:
+    dest: /etc/issue.net
+    content: |
+      Authorized use only. All activity may be monitored and reported.
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [cis, cis_1_7_3, banners, section1]

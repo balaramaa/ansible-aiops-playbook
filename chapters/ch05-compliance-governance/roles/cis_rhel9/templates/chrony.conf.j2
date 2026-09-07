@@ -1,0 +1,24 @@
+{# roles/cis_rhel9/templates/chrony.conf.j2 #}
+{# Chapter 5 — Chrony NTP configuration for CIS compliance #}
+{# Author: Balaramakrishna Alti #}
+{# Managed by Ansible — do not edit manually #}
+
+# CIS 2.1.2 — Chrony NTP configuration
+# Generated: {{ ansible_date_time.iso8601 }}
+
+{% for server in cis_ntp_servers | default(['0.rhel.pool.ntp.org', '1.rhel.pool.ntp.org']) %}
+server {{ server }} iburst
+{% endfor %}
+
+# Record the rate at which the system clock gains/loses time
+driftfile /var/lib/chrony/drift
+
+# Allow the system clock to be stepped in the first three updates
+makestep 1.0 3
+
+# Enable kernel synchronization of the real-time clock (RTC)
+rtcsync
+
+# Logging
+logdir /var/log/chrony
+log tracking measurements statistics
