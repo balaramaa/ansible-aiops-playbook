@@ -1,0 +1,23 @@
+# molecule/default/converge.yml
+# Chapter 10 — Molecule converge playbook: applies the role under test
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Converge — apply linux_baseline role
+  hosts: all
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Update package cache
+      ansible.builtin.dnf:
+        update_cache: true
+      changed_when: false
+
+  roles:
+    - role: linux_baseline
+      vars:
+        # Override for container testing
+        baseline_selinux_state: permissive  # SELinux doesn't work in Docker
+        baseline_motd_enabled: true

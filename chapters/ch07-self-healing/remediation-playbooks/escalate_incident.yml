@@ -1,0 +1,65 @@
+# playbooks/escalate_incident.yml
+# Chapter 7 — Escalate incident when auto-remediation is not safe or has failed
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Escalate incident requiring human intervention
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    incident_id: "ESC-{{ ansible_date_time.epoch }}"
+
+  tasks:
+    - name: Log escalation event
+      ansible.builtin.lineinfile:
+        path: /var/log/self_healing_audit.log
+        line: >
+          {{ ansible_date_time.iso8601 }}
+          incident={{ incident_id }} type=ESCALATION
+          host={{ target_host | default('unknown') }}
+          alert={{ alert_name | default('unknown') }}
+          reason={{ reason | default('manual review required') }}
+        create: true
+        mode: "0640"
+      tags: always
+
+    - name: Send escalation notification via Slack webhook
+      ansible.builtin.uri:
+        url: "{{ lookup('env', 'SLACK_WEBHOOK_URL') }}"
+        method: POST
+        body_format: json
+        body:
+          text: >
+            :rotating_light: *ESCALATION REQUIRED* :rotating_light:
+            Incident: {{ incident_id }}
+            Host: {{ target_host | default('unknown') }}
+            Alert: {{ alert_name | default('unknown') }}
+            Reason: {{ reason | default('automated remediation failed') }}
+            Time: {{ ansible_date_time.iso8601 }}
+            Action: Immediate manual investigation required.
+      when: lookup('env', 'SLACK_WEBHOOK_URL') | length > 0
+      failed_when: false
+      tags: notify
+
+    - name: Create ITSM incident via ServiceNow
+      ansible.builtin.uri:
+        url: "https://{{ lookup('env','SNOW_INSTANCE') }}.service-now.com/api/now/table/incident"
+        method: POST
+        user: "{{ lookup('env', 'SNOW_USER') }}"
+        password: "{{ lookup('env', 'SNOW_PASS') }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          short_description: "[ESCALATION] Auto-remediation failed: {{ alert_name }} on {{ target_host }}"
+          description: "{{ reason }}"
+          category: "Infrastructure"
+          impact: "1"
+          urgency: "1"
+          assignment_group: "Infrastructure Operations"
+        status_code: 201
+      when: lookup('env', 'SNOW_INSTANCE') | length > 0
+      failed_when: false
+      no_log: true
+      tags: itsm

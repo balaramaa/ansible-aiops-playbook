@@ -1,0 +1,74 @@
+# roles/pam_governance/tasks/main.yml — Chapter 8, Listing 8-5
+# Privileged Access Management automation role
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Audit all UID 0 accounts
+  ansible.builtin.shell:
+    cmd: awk -F: '($3 == 0) {print $1}' /etc/passwd
+  register: uid_zero_accounts
+  changed_when: false
+  tags: pam
+
+- name: Assert only root has UID 0
+  ansible.builtin.assert:
+    that:
+      - uid_zero_accounts.stdout_lines | length == 1
+      - uid_zero_accounts.stdout_lines[0] == 'root'
+    fail_msg: >
+      CRITICAL: Multiple UID 0 accounts on {{ inventory_hostname }}:
+      {{ uid_zero_accounts.stdout_lines }}
+      Investigate immediately.
+  tags: pam
+
+- name: Lock inactive system accounts
+  ansible.builtin.shell:
+    cmd: >
+      awk -F: '($3 >= 1000 && $7 !~ /nologin|false/) {print $1}' /etc/passwd
+  register: interactive_users
+  changed_when: false
+  tags: pam
+
+- name: Configure SSH authorized key governance
+  ansible.builtin.authorized_key:
+    user:      "{{ item.user }}"
+    key:       "{{ item.key }}"
+    state:     present
+    exclusive: "{{ pam_exclusive_keys | default(false) }}"
+  loop: "{{ pam_authorized_keys | default([]) }}"
+  no_log: true
+  tags: pam
+
+- name: Enforce root SSH lockout
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config.d/99-cis-hardening.conf
+    regexp: "^PermitRootLogin"
+    line:   "PermitRootLogin no"
+  notify: reload sshd
+  tags: [pam, ssh]
+
+- name: Deploy session timeout profile
+  ansible.builtin.copy:
+    dest: /etc/profile.d/session_timeout.sh
+    content: |
+      # PAM governance — session timeout enforcement
+      # Managed by Ansible — do not edit manually
+      TMOUT={{ pam_session_timeout_seconds | default(900) }}
+      export TMOUT
+      readonly TMOUT
+    owner: root
+    group: root
+    mode: "0644"
+  tags: pam
+
+- name: Record PAM governance completion
+  ansible.builtin.lineinfile:
+    path: /var/log/compliance/pam_audit_{{ ansible_date_time.date }}.log
+    line: >
+      {{ ansible_date_time.iso8601 }} PAM_GOVERNANCE_APPLIED
+      host={{ inventory_hostname }}
+      uid0_count={{ uid_zero_accounts.stdout_lines | length }}
+    create: true
+    mode: "0640"
+  tags: [pam, always]

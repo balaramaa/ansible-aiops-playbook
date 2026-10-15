@@ -1,0 +1,46 @@
+#!/usr/bin/env bpftrace
+// detect_network_anomalies.bt — Chapter 8, Listing 8-2
+// Track TCP connections and DNS queries for anomaly detection
+//
+// Author : Balaramakrishna Alti
+// GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+//
+// Usage: sudo bpftrace chapters/ch08-security-automation/ebpf-security/detect_network_anomalies.bt
+// Output: JSON events for AI security analyzer or SIEM
+//
+// Feed to analyzer:
+//   sudo bpftrace detect_network_anomalies.bt | \
+//     python3 scripts/security_event_analyzer.py --stdin
+
+BEGIN {
+    printf("Tracking network connections for anomaly detection. Ctrl-C to stop.\n");
+    // Track connection counts per process to detect port scanning
+    @conn_count = hist(0);
+}
+
+// Track all new outbound TCP connections
+kprobe:tcp_connect {
+    $sk = (struct sock *)arg0;
+    $daddr = ntop(AF_INET, $sk->__sk_common.skc_daddr);
+    $dport_raw = $sk->__sk_common.skc_dport;
+    $dport = ($dport_raw >> 8) | (($dport_raw & 0xFF) << 8);
+
+    printf("{\"event\":\"TCP_CONNECT\",\"timestamp\":%llu,\"pid\":%d,\"comm\":\"%s\",\"dst_ip\":\"%s\",\"dst_port\":%d}\n",
+           nsecs, pid, comm, $daddr, $dport);
+
+    @conn_per_proc[comm] = count();
+}
+
+// Alert on high connection counts (potential port scan or C2)
+interval:s:10 {
+    print(@conn_per_proc);
+    clear(@conn_per_proc);
+}
+
+// Track processes that open raw sockets (potential packet crafting)
+tracepoint:syscalls:sys_enter_socket {
+    if (args->type == 3) {  // SOCK_RAW
+        printf("{\"event\":\"RAW_SOCKET\",\"timestamp\":%llu,\"pid\":%d,\"comm\":\"%s\"}\n",
+               nsecs, pid, comm);
+    }
+}

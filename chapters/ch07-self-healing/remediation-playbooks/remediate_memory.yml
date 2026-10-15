@@ -1,0 +1,90 @@
+# playbooks/remediate_memory.yml
+# Chapter 7, Listing 7-5 — Memory pressure automated remediation
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Remediate high memory usage
+  hosts: "{{ target_host }}"
+  become: true
+  gather_facts: true
+
+  vars:
+    incident_id:      "MEM-{{ ansible_date_time.epoch }}"
+    memory_threshold: 90
+
+  tasks:
+    - name: Capture pre-remediation memory state
+      ansible.builtin.command:
+        cmd: free -h
+      register: pre_mem_state
+      changed_when: false
+      tags: diagnostics
+
+    - name: Identify top memory consumers
+      ansible.builtin.command:
+        cmd: ps aux --sort=-%mem --no-headers | head -5
+      register: top_mem_procs
+      changed_when: false
+      tags: diagnostics
+
+    - name: Drop page cache (safe, non-destructive)
+      ansible.builtin.shell:
+        cmd: sync && echo 3 > /proc/sys/vm/drop_caches
+      changed_when: true
+      tags: remediate
+
+    - name: Check memory after cache drop
+      ansible.builtin.shell:
+        cmd: free | grep Mem | awk '{print int($3/$2 * 100)}'
+      register: post_cache_mem
+      changed_when: false
+      tags: remediate
+
+    - name: Restart application service if memory still critical
+      block:
+        - name: Find high-memory application service
+          ansible.builtin.shell:
+            cmd: >
+              systemctl list-units --type=service --state=running |
+              grep -E "tomcat|jboss|wildfly|java|app" |
+              awk '{print $1}' | head -1
+          register: app_service
+          changed_when: false
+
+        - name: Restart identified service
+          ansible.builtin.service:
+            name: "{{ app_service.stdout | trim }}"
+            state: restarted
+          when: app_service.stdout | trim | length > 0
+
+      when: post_cache_mem.stdout | int >= memory_threshold
+      tags: remediate
+
+    - name: Verify memory is within acceptable range
+      ansible.builtin.shell:
+        cmd: free | grep Mem | awk '{print int($3/$2 * 100)}'
+      register: final_mem
+      changed_when: false
+      tags: verify
+
+    - name: Log remediation outcome
+      ansible.builtin.lineinfile:
+        path: /var/log/self_healing_audit.log
+        line: >
+          {{ ansible_date_time.iso8601 }}
+          incident={{ incident_id }} type=HighMemoryUsage
+          host={{ inventory_hostname }}
+          final_mem_pct={{ final_mem.stdout }}
+          status={{ "SUCCESS" if final_mem.stdout | int < memory_threshold else "ESCALATE" }}
+        create: true
+        mode: "0640"
+      tags: always
+
+    - name: Escalate if memory still critical
+      ansible.builtin.fail:
+        msg: >
+          ESCALATION REQUIRED: Memory at {{ final_mem.stdout }}% after remediation
+          on {{ inventory_hostname }}. Incident: {{ incident_id }}
+      when: final_mem.stdout | int >= memory_threshold
+      tags: verify

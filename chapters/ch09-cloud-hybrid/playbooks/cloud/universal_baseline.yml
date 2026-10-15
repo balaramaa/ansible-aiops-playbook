@@ -1,0 +1,130 @@
+# playbooks/cloud/universal_baseline.yml
+# Chapter 9, Listing 9-8 — Universal security baseline across all environments
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Applies consistent CIS hardening to on-premises RHEL, AWS EC2,
+# VMware VMs, and Nutanix AHV VMs — with platform-specific additions.
+#
+# Usage:
+#   # All environments:
+#   ansible-playbook -i inventory/ playbooks/cloud/universal_baseline.yml
+#
+#   # Cloud only:
+#   ansible-playbook -i inventory/ playbooks/cloud/universal_baseline.yml \
+#     --limit "aws_env_production:vmware_cluster_prod:nutanix_env_production"
+#
+#   # Dry run with diff:
+#   ansible-playbook -i inventory/ playbooks/cloud/universal_baseline.yml \
+#     --check --diff --limit lab
+---
+- name: Apply universal security baseline across all environments
+  hosts: all
+  become: true
+  gather_facts: true
+
+  pre_tasks:
+    - name: Detect platform and environment
+      ansible.builtin.set_fact:
+        is_aws: >-
+          {{ ansible_system_vendor | lower is search('amazon') or
+             ansible_bios_version | lower is search('amazon') or
+             lookup('env','AWS_EXECUTION_ENV') | length > 0 }}
+        is_vmware: >-
+          {{ ansible_system_vendor | lower is search('vmware') }}
+        is_nutanix: >-
+          {{ ansible_system_vendor | lower is search('nutanix') or
+             ansible_product_name | lower is search('ahv') }}
+        platform_name: >-
+          {{ 'AWS EC2' if ansible_system_vendor | lower is search('amazon')
+             else 'VMware vSphere' if ansible_system_vendor | lower is search('vmware')
+             else 'Nutanix AHV' if ansible_system_vendor | lower is search('nutanix')
+             else 'On-premises / bare-metal' }}
+      tags: always
+
+    - name: Display platform detection
+      ansible.builtin.debug:
+        msg:
+          - "Host     : {{ inventory_hostname }}"
+          - "Platform : {{ platform_name }}"
+          - "OS       : {{ ansible_distribution }} {{ ansible_distribution_version }}"
+          - "Env      : {{ environment_name | default('unknown') }}"
+      tags: always
+
+  roles:
+    - role: linux_baseline
+      tags: baseline
+
+    - role: cis_rhel9
+      tags: cis
+
+  post_tasks:
+    # ── AWS-specific: enforce IMDSv2 ──────────────────────────────────────
+    - name: "AWS | Enforce Instance Metadata Service v2 (IMDSv2)"
+      ansible.builtin.command:
+        cmd: >
+          aws ec2 modify-instance-metadata-options
+          --instance-id {{ ansible_ec2_instance_id | default('') }}
+          --http-tokens required
+          --http-endpoint enabled
+          --region {{ ansible_ec2_placement_region | default('us-east-1') }}
+      when:
+        - is_aws | bool
+        - ansible_ec2_instance_id is defined
+      changed_when: true
+      failed_when: false
+      tags: [aws, security, imdsv2]
+
+    # ── VMware-specific: ensure guest tools ───────────────────────────────
+    - name: "VMware | Ensure open-vm-tools is installed and running"
+      ansible.builtin.dnf:
+        name:  open-vm-tools
+        state: present
+      when: is_vmware | bool
+      tags: vmware
+
+    - name: "VMware | Enable open-vm-tools service"
+      ansible.builtin.service:
+        name:    vmtoolsd
+        state:   started
+        enabled: true
+      when: is_vmware | bool
+      tags: vmware
+
+    # ── Nutanix-specific: virtio driver check ─────────────────────────────
+    - name: "Nutanix | Verify VirtIO drivers are loaded"
+      ansible.builtin.command:
+        cmd: lsmod | grep virtio
+      register: virtio_check
+      changed_when: false
+      failed_when: false
+      when: is_nutanix | bool
+      tags: nutanix
+
+    # ── Post-baseline compliance verification (all platforms) ─────────────
+    - name: Run post-baseline OpenSCAP compliance scan
+      ansible.builtin.command:
+        cmd: >
+          oscap xccdf eval
+          --profile xccdf_org.ssgproject.content_profile_cis_server_l1
+          --results /var/log/compliance/post_baseline_{{ ansible_date_time.date }}.xml
+          /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
+      register: post_scan
+      failed_when: post_scan.rc not in [0, 2]
+      changed_when: false
+      when: ansible_facts.packages['scap-security-guide'] is defined
+      tags: [compliance, verify]
+
+    - name: Record baseline completion
+      ansible.builtin.lineinfile:
+        path: /etc/ansible_managed
+        line: >
+          universal_baseline={{ ansible_date_time.iso8601 }}
+          platform={{ platform_name }}
+          environment={{ environment_name | default('unknown') }}
+        create: true
+        owner: root
+        group: root
+        mode:  "0444"
+      tags: always

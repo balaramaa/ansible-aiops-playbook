@@ -1,0 +1,124 @@
+# playbooks/aws/provision_rhel_ec2.yml
+# Chapter 9, Listing 9-2 — Provision and baseline-configure RHEL 9 EC2 instances
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Prerequisites:
+#   ansible-galaxy collection install amazon.aws
+#   pip3 install boto3 botocore
+#   aws configure  (or set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY)
+#
+# Required variables:
+#   ec2_ami_id      — RHEL 9 AMI ID for the target region
+#   ec2_key_pair    — EC2 key pair name
+#   ec2_key_path    — Local path to the private key file
+#   ec2_subnet_id   — VPC subnet ID
+#   bastion_cidr    — CIDR block allowed to SSH (e.g., 10.0.0.0/8)
+#
+# Usage:
+#   ansible-playbook playbooks/aws/provision_rhel_ec2.yml \
+#     -e "ec2_ami_id=ami-... ec2_key_pair=my-key ec2_subnet_id=subnet-..."
+---
+- name: Provision RHEL 9 EC2 instances
+  hosts: localhost
+  gather_facts: false
+  collections:
+    - amazon.aws
+
+  vars:
+    aws_region:      "{{ aws_region | default('us-east-1') }}"
+    instance_type:   "{{ ec2_instance_type | default('t3.medium') }}"
+    instance_count:  "{{ ec2_count | default(1) | int }}"
+    environment_tag: "{{ environment | default('staging') }}"
+    server_role:     "{{ role | default('app') }}"
+    cost_center:     "{{ cost_center | default('unknown') }}"
+    team:            "{{ team | default('platform') }}"
+
+  tasks:
+    - name: Ensure security group exists
+      amazon.aws.ec2_security_group:
+        name:        "{{ environment_tag }}-linux-sg"
+        description: "Linux managed instances — {{ environment_tag }}"
+        region:      "{{ aws_region }}"
+        rules:
+          - proto:     tcp
+            ports:     [22]
+            cidr_ip:   "{{ bastion_cidr }}"
+            rule_desc: "SSH from bastion only"
+        rules_egress:
+          - proto:   all
+            cidr_ip: "0.0.0.0/0"
+        tags:
+          Environment: "{{ environment_tag }}"
+          ManagedBy:   ansible
+      register: security_group
+
+    - name: Launch RHEL 9 EC2 instances
+      amazon.aws.ec2_instance:
+        name:          "{{ environment_tag }}-linux-{{ '%02d' | format(item) }}"
+        instance_type: "{{ instance_type }}"
+        image_id:      "{{ ec2_ami_id }}"
+        key_name:      "{{ ec2_key_pair }}"
+        region:        "{{ aws_region }}"
+        security_groups:
+          - "{{ security_group.group_id }}"
+        vpc_subnet_id: "{{ ec2_subnet_id }}"
+        wait:          true
+        tags:
+          Name:        "{{ environment_tag }}-linux-{{ '%02d' | format(item) }}"
+          Environment: "{{ environment_tag }}"
+          OS:          RHEL9
+          ManagedBy:   ansible
+          Role:        "{{ server_role }}"
+          Team:        "{{ team }}"
+          CostCenter:  "{{ cost_center }}"
+        ebs_optimized: true
+        volumes:
+          - device_name: /dev/sda1
+            ebs:
+              volume_size:            50
+              volume_type:            gp3
+              encrypted:              true
+              delete_on_termination:  true
+        metadata_options:
+          http_tokens:               required   # Enforce IMDSv2
+          http_endpoint:             enabled
+          http_put_response_hop_limit: 1
+      loop: "{{ range(1, instance_count + 1) | list }}"
+      register: ec2_instances
+
+    - name: Wait for SSH to become available on new instances
+      ansible.builtin.wait_for:
+        host:    "{{ item.instances[0].private_ip_address }}"
+        port:    22
+        timeout: 300
+      loop: "{{ ec2_instances.results }}"
+
+    - name: Add instances to in-memory inventory for immediate configuration
+      ansible.builtin.add_host:
+        hostname:                    "{{ item.instances[0].private_ip_address }}"
+        groups:                      ["newly_provisioned", "{{ environment_tag }}"]
+        ansible_user:                ec2-user
+        ansible_ssh_private_key_file: "{{ ec2_key_path }}"
+        environment_name:            "{{ environment_tag }}"
+      loop: "{{ ec2_instances.results }}"
+
+    - name: Display provisioned instance details
+      ansible.builtin.debug:
+        msg:
+          - "Instance : {{ item.instances[0].instance_id }}"
+          - "Private IP: {{ item.instances[0].private_ip_address }}"
+          - "Type      : {{ item.instances[0].instance_type }}"
+      loop: "{{ ec2_instances.results }}"
+
+- name: Apply baseline configuration to newly provisioned EC2 instances
+  hosts: newly_provisioned
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: linux_baseline
+      tags: baseline
+    - role: cis_rhel9
+      tags: cis

@@ -1,0 +1,84 @@
+# playbooks/remediate_disk.yml
+# Chapter 7, Listing 7-6 — Disk space automated remediation
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Remediate critical disk usage
+  hosts: "{{ target_host }}"
+  become: true
+  gather_facts: true
+
+  vars:
+    incident_id:       "DISK-{{ ansible_date_time.epoch }}"
+    disk_threshold:    90
+    log_max_age_days:  30
+
+  tasks:
+    - name: Show disk consumers
+      ansible.builtin.command:
+        cmd: "du -sh {{ mount_point | default('/') }}/* 2>/dev/null | sort -hr | head -15"
+      register: disk_consumers
+      changed_when: false
+      tags: diagnostics
+
+    - name: Find old log files
+      ansible.builtin.find:
+        paths: /var/log
+        age: "{{ log_max_age_days }}d"
+        recurse: true
+        patterns: "*.log,*.log.gz,*.log.[0-9]*"
+      register: old_logs
+      tags: remediate
+
+    - name: Remove old log files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ old_logs.files }}"
+      when: old_logs.files | length > 0
+      tags: remediate
+
+    - name: Vacuum systemd journal
+      ansible.builtin.command:
+        cmd: "journalctl --vacuum-time={{ log_max_age_days }}d"
+      changed_when: true
+      tags: remediate
+
+    - name: Find and remove old core dumps
+      ansible.builtin.find:
+        paths: [/var/lib/systemd/coredump, /tmp]
+        patterns: "core,core.*"
+        age: "1d"
+      register: core_files
+      tags: remediate
+
+    - name: Remove core dump files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ core_files.files }}"
+      tags: remediate
+
+    - name: Check disk usage after cleanup
+      ansible.builtin.command:
+        cmd: "df {{ mount_point | default('/') }} | tail -1 | awk '{print $5}' | tr -d '%'"
+      register: post_disk_pct
+      changed_when: false
+      tags: verify
+
+    - name: Log remediation outcome
+      ansible.builtin.lineinfile:
+        path: /var/log/self_healing_audit.log
+        line: >
+          {{ ansible_date_time.iso8601 }}
+          incident={{ incident_id }} type=DiskSpaceCritical
+          host={{ inventory_hostname }}
+          mount={{ mount_point | default('/') }}
+          final_disk_pct={{ post_disk_pct.stdout }}
+          logs_removed={{ old_logs.files | length }}
+          cores_removed={{ core_files.files | length }}
+          status={{ "SUCCESS" if post_disk_pct.stdout | int < disk_threshold else "ESCALATE" }}
+        create: true
+        mode: "0640"
+      tags: always

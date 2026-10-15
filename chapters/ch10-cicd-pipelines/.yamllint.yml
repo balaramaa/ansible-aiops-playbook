@@ -1,0 +1,40 @@
+# .yamllint.yml — Chapter 10
+# YAML linting rules for Ansible repositories
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+extends: default
+
+rules:
+  line-length:
+    max: 160
+    level: warning    # Warn but don't fail on long lines
+
+  truthy:
+    allowed-values: ["true", "false", "yes", "no"]
+    check-keys: true
+
+  comments:
+    min-spaces-from-content: 2
+
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+
+  brackets:
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+
+  indentation:
+    spaces: 2
+    indent-sequences: true
+    check-multi-line-strings: false
+
+  document-start:
+    present: true    # Require --- at start of YAML files
+
+ignore: |
+  .cache/
+  molecule/
+  .github/

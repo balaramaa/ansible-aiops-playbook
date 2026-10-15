@@ -1,0 +1,107 @@
+# rulebooks/self_healing.yml
+# Chapter 7, Listing 7-3 — Production self-healing rulebook
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Requirements:
+#   pip3 install ansible-rulebook ansible-runner
+#   ansible-galaxy collection install ansible.eda community.general
+#
+# Run:
+#   ansible-rulebook \
+#     --rulebook chapters/ch07-self-healing/eda-rulebooks/self_healing.yml \
+#     --inventory inventory/ \
+#     --verbose
+---
+- name: Infrastructure Self-Healing
+  hosts: all
+
+  sources:
+    # Prometheus Alertmanager webhook
+    - ansible.eda.alertmanager:
+        host: 0.0.0.0
+        port: 8000
+
+    # Kafka event stream for application events
+    - ansible.eda.kafka:
+        host: "{{ kafka_host | default('localhost') }}"
+        port: 9092
+        topic: infra-events
+        group_id: eda-self-healing
+
+  rules:
+    # ── 1. High memory ─────────────────────────────────────────────────────
+    - name: Remediate high memory usage
+      condition: >
+        event.alert.labels.alertname == "HighMemoryUsage" and
+        event.alert.status == "firing"
+      action:
+        run_playbook:
+          name: playbooks/remediate_memory.yml
+          extra_vars:
+            target_host: "{{ event.alert.labels.instance | split(':') | first }}"
+            alert_name:  "HighMemoryUsage"
+            severity:    "{{ event.alert.labels.severity | default('warning') }}"
+
+    # ── 2. Disk space critical ─────────────────────────────────────────────
+    - name: Remediate critical disk usage
+      condition: >
+        event.alert.labels.alertname == "DiskSpaceCritical" and
+        event.alert.status == "firing"
+      action:
+        run_playbook:
+          name: playbooks/remediate_disk.yml
+          extra_vars:
+            target_host:  "{{ event.alert.labels.instance | split(':') | first }}"
+            mount_point:  "{{ event.alert.labels.mountpoint | default('/') }}"
+
+    # ── 3. Service down ────────────────────────────────────────────────────
+    - name: Restart failed service
+      condition: >
+        event.alert.labels.alertname == "ServiceDown" and
+        event.alert.status == "firing"
+      action:
+        run_playbook:
+          name: playbooks/remediate_service.yml
+          extra_vars:
+            target_host:  "{{ event.alert.labels.instance | split(':') | first }}"
+            service_name: "{{ event.alert.labels.service | default('unknown') }}"
+
+    # ── 4. Compliance drift ────────────────────────────────────────────────
+    - name: Remediate compliance drift
+      condition: >
+        event.payload.event_type == "compliance_drift" and
+        event.payload.control_id is defined
+      action:
+        run_playbook:
+          name: playbooks/remediate_compliance.yml
+          extra_vars:
+            target_host: "{{ event.payload.hostname }}"
+            drift_type:  "{{ event.payload.control_id }}"
+
+    # ── 5. CPU runaway process ─────────────────────────────────────────────
+    - name: Investigate and remediate CPU spike
+      condition: >
+        event.alert.labels.alertname == "HighCPUUsage" and
+        event.alert.status == "firing" and
+        event.alert.labels.severity == "critical"
+      action:
+        run_playbook:
+          name: playbooks/remediate_cpu.yml
+          extra_vars:
+            target_host: "{{ event.alert.labels.instance | split(':') | first }}"
+
+    # ── Circuit breaker ────────────────────────────────────────────────────
+    - name: Circuit breaker — escalate after 3 failed remediations
+      condition: >
+        event.alert.status == "firing" and
+        event.alert.labels.remediation_attempts is defined and
+        event.alert.labels.remediation_attempts | int >= 3
+      action:
+        run_playbook:
+          name: playbooks/escalate_incident.yml
+          extra_vars:
+            target_host:  "{{ event.alert.labels.instance | split(':') | first }}"
+            alert_name:   "{{ event.alert.labels.alertname }}"
+            reason:       "Circuit breaker opened: 3 consecutive remediation failures"

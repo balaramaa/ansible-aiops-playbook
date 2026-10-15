@@ -1,0 +1,153 @@
+# roles/cis_rhel9_l2/tasks/main.yml — Chapter 8, Listing 8-4
+# CIS RHEL 9 Level 2 hardening — extends Chapter 5 Level 1 role
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Prerequisites: apply cis_rhel9 (Level 1) role from Chapter 5 first
+# Usage: ansible-playbook site.yml --tags cis_l2
+---
+- name: Validate Level 2 prerequisites
+  ansible.builtin.assert:
+    that:
+      - ansible_os_family == "RedHat"
+      - ansible_distribution_major_version | int >= 9
+    fail_msg: "cis_rhel9_l2 requires RHEL/Rocky Linux 9+"
+  tags: always
+
+# ── Kernel module restrictions ──────────────────────────────────────────────
+- name: "CIS L2 | Disable USB storage"
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/cis-usb-storage.conf
+    content: |
+      install usb-storage /bin/true
+      blacklist usb-storage
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [cis, cis_l2, kernel, usb]
+
+- name: "CIS L2 | Disable IEEE 1394 (Firewire)"
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/cis-firewire.conf
+    content: |
+      install firewire-core /bin/true
+      blacklist firewire-core
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [cis, cis_l2, kernel]
+
+- name: "CIS L2 | Disable SCTP protocol"
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/cis-sctp.conf
+    content: |
+      install sctp /bin/true
+      blacklist sctp
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [cis, cis_l2, kernel, network]
+
+- name: "CIS L2 | Disable TIPC protocol"
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/cis-tipc.conf
+    content: |
+      install tipc /bin/true
+      blacklist tipc
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [cis, cis_l2, kernel, network]
+
+# ── Advanced sysctl hardening ───────────────────────────────────────────────
+- name: "CIS L2 | Apply Level 2 kernel parameters"
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: true
+    sysctl_file: /etc/sysctl.d/99-cis-level2.conf
+  loop: "{{ cis_l2_sysctl_params | dict2items }}"
+  tags: [cis, cis_l2, sysctl]
+
+# ── Process hardening ───────────────────────────────────────────────────────
+- name: "CIS L2 | Restrict core dumps via limits.d"
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/cis-coredump.conf
+    content: |
+      # CIS Level 2 — core dump restriction
+      * hard core 0
+      * soft core 0
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [cis, cis_l2, coredump]
+
+- name: "CIS L2 | Set umask to 027 in login.defs"
+  ansible.builtin.lineinfile:
+    path: /etc/login.defs
+    regexp: "^UMASK"
+    line: "UMASK   027"
+  tags: [cis, cis_l2, umask]
+
+- name: "CIS L2 | Set umask to 027 in /etc/bashrc"
+  ansible.builtin.lineinfile:
+    path: /etc/bashrc
+    regexp: "umask"
+    line: "umask 027"
+  tags: [cis, cis_l2, umask]
+
+# ── Account lockout (faillock) ──────────────────────────────────────────────
+- name: "CIS L2 | Configure account lockout policy"
+  ansible.builtin.lineinfile:
+    path: /etc/security/faillock.conf
+    regexp: "^#?{{ item.key }}"
+    line: "{{ item.key }} = {{ item.value }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { key: deny,          value: "5" }
+    - { key: fail_interval, value: "900" }
+    - { key: unlock_time,   value: "600" }
+    - { key: audit,         value: "" }
+  tags: [cis, cis_l2, pam, lockout]
+
+# ── Session limits ──────────────────────────────────────────────────────────
+- name: "CIS L2 | Limit maximum concurrent logins"
+  ansible.builtin.copy:
+    dest: /etc/security/limits.d/cis-maxlogins.conf
+    content: |
+      # CIS Level 2 — maximum concurrent logins
+      * hard maxlogins 10
+    owner: root
+    group: root
+    mode: "0644"
+  tags: [cis, cis_l2, pam]
+
+# ── AIDE file integrity ─────────────────────────────────────────────────────
+- name: "CIS L2 | Ensure AIDE is installed"
+  ansible.builtin.dnf:
+    name: aide
+    state: present
+  tags: [cis, cis_l2, aide]
+
+- name: "CIS L2 | Initialize AIDE database"
+  ansible.builtin.command:
+    cmd: aide --init
+    creates: /var/lib/aide/aide.db.gz
+  async: 600
+  poll: 15
+  tags: [cis, cis_l2, aide]
+
+- name: "CIS L2 | Schedule AIDE daily check"
+  ansible.builtin.cron:
+    name: "CIS L2 AIDE integrity check"
+    minute: "30"
+    hour:   "4"
+    job:    "aide --check 2>&1 | logger -t aide-check"
+    user:   root
+    state:  present
+  tags: [cis, cis_l2, aide]

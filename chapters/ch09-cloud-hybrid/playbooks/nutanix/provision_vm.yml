@@ -1,0 +1,112 @@
+# playbooks/nutanix/provision_vm.yml
+# Chapter 9, Listing 9-7 — Provision RHEL 9 VM on Nutanix AHV
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Prerequisites:
+#   ansible-galaxy collection install nutanix.ncp
+#   pip3 install requests
+#
+# Environment variables:
+#   NUTANIX_HOST  — Prism Central hostname
+#   NUTANIX_USER  — Prism Central username
+#   NUTANIX_PASS  — Prism Central password
+---
+- name: Provision RHEL 9 VM on Nutanix AHV
+  hosts: localhost
+  gather_facts: true
+  collections:
+    - nutanix.ncp
+
+  vars:
+    nutanix_host:       "{{ lookup('env', 'NUTANIX_HOST') }}"
+    nutanix_username:   "{{ lookup('env', 'NUTANIX_USER') }}"
+    nutanix_password:   "{{ lookup('env', 'NUTANIX_PASS') }}"
+    image_name:         "RHEL9-CIS-Hardened-Image"
+    vm_memory_gb:       "{{ vm_memory_gb | default(4) }}"
+    vm_vcpus:           "{{ vm_vcpus | default(2) }}"
+
+  tasks:
+    - name: Create VM from CIS-hardened RHEL 9 image
+      nutanix.ncp.ntnx_vms:
+        nutanix_host:     "{{ nutanix_host }}"
+        nutanix_username: "{{ nutanix_username }}"
+        nutanix_password: "{{ nutanix_password }}"
+        validate_certs:   true
+        state:            present
+        name:             "{{ vm_name }}"
+        cluster:
+          name: "{{ nutanix_cluster }}"
+        memory_gb:        "{{ vm_memory_gb }}"
+        vcpus:            "{{ vm_vcpus }}"
+        cores_per_vcpu:   1
+        disks:
+          - type: DISK
+            size_gb: 50
+            clone_image:
+              name: "{{ image_name }}"
+        nics:
+          - subnet:
+              name: "{{ nutanix_subnet }}"
+        guest_customization:
+          type: CLOUD_INIT
+          cloud_init_script: |
+            #cloud-config
+            hostname: {{ vm_hostname }}
+            fqdn: {{ vm_hostname }}.{{ dns_domain }}
+            users:
+              - name: ansible
+                sudo: ALL=(ALL) NOPASSWD:ALL
+                shell: /bin/bash
+                ssh_authorized_keys:
+                  - {{ ansible_public_key }}
+            runcmd:
+              - hostnamectl set-hostname {{ vm_hostname }}.{{ dns_domain }}
+        categories:
+          Environment: "{{ environment_name }}"
+          CostCenter:  "{{ cost_center | default('unknown') }}"
+          ManagedBy:   ansible
+          Team:        "{{ team | default('platform') }}"
+          Role:        "{{ server_role | default('app') }}"
+      register: vm_result
+
+    - name: Wait for VM IP address to be assigned
+      nutanix.ncp.ntnx_vms_info:
+        nutanix_host:     "{{ nutanix_host }}"
+        nutanix_username: "{{ nutanix_username }}"
+        nutanix_password: "{{ nutanix_password }}"
+        validate_certs:   true
+        vm_uuid:          "{{ vm_result.vm_uuid }}"
+      register: vm_info
+      until: >
+        vm_info.response.status.resources.nic_list | length > 0 and
+        vm_info.response.status.resources.nic_list[0].ip_endpoint_list | length > 0
+      retries: 30
+      delay:   10
+
+    - name: Add VM to in-memory inventory
+      ansible.builtin.add_host:
+        hostname:        "{{ vm_info.response.status.resources.nic_list[0].ip_endpoint_list[0].ip }}"
+        groups:          ["newly_provisioned_nutanix", "{{ environment_name }}"]
+        ansible_user:    ansible
+        environment_name: "{{ environment_name }}"
+
+    - name: Display provisioning results
+      ansible.builtin.debug:
+        msg:
+          - "VM Name : {{ vm_name }}"
+          - "UUID    : {{ vm_result.vm_uuid }}"
+          - "IP      : {{ vm_info.response.status.resources.nic_list[0].ip_endpoint_list[0].ip }}"
+          - "Image   : {{ image_name }}"
+
+- name: Apply baseline to new Nutanix VMs
+  hosts: newly_provisioned_nutanix
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: linux_baseline
+      tags: baseline
+    - role: cis_rhel9
+      tags: cis

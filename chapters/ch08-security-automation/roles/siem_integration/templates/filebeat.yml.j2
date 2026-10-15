@@ -1,0 +1,84 @@
+{# roles/siem_integration/templates/filebeat.yml.j2 — Chapter 8, Listing 8-7 #}
+{# Author: Balaramakrishna Alti #}
+{# Managed by Ansible — do not edit manually #}
+{# Generated: {{ ansible_date_time.iso8601 }} #}
+---
+filebeat.inputs:
+  # Audit log — highest-priority security events
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/audit/audit.log
+    tags: ["audit", "security", "compliance"]
+    fields:
+      environment:        "{{ environment_name | default('production') }}"
+      host_role:          "{{ host_role | default('standard') }}"
+      compliance_profile: "{{ compliance_level | default('cis_level1') }}"
+      ansible_managed:    true
+
+  # Self-healing and patch governance audit trails
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/self_healing_audit.log
+      - /var/log/patch_governance_audit.jsonl
+    tags: ["self-healing", "automation", "aiops"]
+    json.keys_under_root: true
+    json.overwrite_keys:  true
+
+  # Compliance reports from Chapter 5
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/compliance/*.log
+      - /var/log/compliance/*.jsonl
+    tags: ["compliance", "cis", "governance"]
+
+  # Security event analyzer output (Chapter 8)
+  - type: log
+    enabled: true
+    paths:
+      - /var/log/security_events.jsonl
+    tags: ["ebpf", "threat-detection", "ai-security"]
+    json.keys_under_root: true
+
+filebeat.modules:
+  - module: system
+    syslog:
+      enabled: true
+    auth:
+      enabled: true
+  - module: auditd
+    audit:
+      enabled: true
+
+output.elasticsearch:
+  hosts:    {{ siem_elasticsearch_hosts | to_json }}
+  protocol: https
+  ssl.certificate_authorities:
+    - /etc/filebeat/ca.crt
+  username: "{{ siem_username }}"
+  password: "{{ siem_password }}"
+  indices:
+    - index: "linux-security-%{+yyyy.MM.dd}"
+      when.contains:
+        tags: "audit"
+    - index: "linux-automation-%{+yyyy.MM.dd}"
+      when.contains:
+        tags: "self-healing"
+    - index: "linux-compliance-%{+yyyy.MM.dd}"
+      when.contains:
+        tags: "compliance"
+
+setup.kibana:
+  host: "{{ siem_kibana_host }}"
+
+setup.dashboards.enabled: true
+
+logging.level: warning
+logging.to_files: true
+logging.files:
+  path:      /var/log/filebeat
+  name:      filebeat
+  keepfiles: 7
+  permissions: "0640"

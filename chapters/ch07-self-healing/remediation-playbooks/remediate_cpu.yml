@@ -1,0 +1,74 @@
+# playbooks/remediate_cpu.yml
+# Chapter 7 — CPU spike investigation and remediation
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Investigate and remediate CPU spike
+  hosts: "{{ target_host }}"
+  become: true
+  gather_facts: true
+
+  vars:
+    incident_id:   "CPU-{{ ansible_date_time.epoch }}"
+    cpu_threshold: 90
+    safe_to_kill:  false  # Never kill processes automatically — only report
+
+  tasks:
+    - name: Identify top CPU consumers
+      ansible.builtin.command:
+        cmd: ps aux --sort=-%cpu --no-headers | head -10
+      register: top_cpu
+      changed_when: false
+      tags: diagnostics
+
+    - name: Check for runaway cron jobs
+      ansible.builtin.command:
+        cmd: ps aux | grep -E "cron|anacron" | grep -v grep
+      register: cron_procs
+      changed_when: false
+      failed_when: false
+      tags: diagnostics
+
+    - name: Get load average history
+      ansible.builtin.command:
+        cmd: uptime
+      register: load_avg
+      changed_when: false
+      tags: diagnostics
+
+    - name: Run AI root cause analysis
+      ansible.builtin.command:
+        cmd: >
+          python3 /opt/ansible-aiops/scripts/rca_engine.py
+          --host {{ inventory_hostname }}
+          --alert HighCPUUsage
+      register: rca_result
+      changed_when: false
+      failed_when: false
+      tags: rca
+
+    - name: Log CPU spike details for human review
+      ansible.builtin.lineinfile:
+        path: /var/log/self_healing_audit.log
+        line: >
+          {{ ansible_date_time.iso8601 }}
+          incident={{ incident_id }} type=HighCPUUsage
+          host={{ inventory_hostname }}
+          load_avg={{ load_avg.stdout | regex_search('load average: (.+)', '\1') | first | default('unknown') }}
+          top_consumer={{ top_cpu.stdout_lines[0] | default('unknown') | truncate(80) }}
+          status=INVESTIGATING
+        create: true
+        mode: "0640"
+      tags: always
+
+    - name: Escalate CPU spike for human investigation
+      ansible.builtin.fail:
+        msg: >
+          CPU spike on {{ inventory_hostname }} requires human investigation.
+          Incident: {{ incident_id }}
+          Top consumer: {{ top_cpu.stdout_lines[0] | default('unknown') }}
+          Automated CPU remediation is disabled to prevent accidental process kills.
+          Review /var/log/self_healing_audit.log and investigate manually.
+      when: not safe_to_kill | bool
+      tags: verify

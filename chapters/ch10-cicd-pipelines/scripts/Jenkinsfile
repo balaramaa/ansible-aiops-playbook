@@ -1,0 +1,220 @@
+// Jenkinsfile — Chapter 10, Listing 10-8
+// Infrastructure CI/CD pipeline for Jenkins
+//
+// Author : Balaramakrishna Alti
+// GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+//
+// Required Jenkins credentials:
+//   ansible-vault-password  — Secret text: Vault password
+//   ansible-ssh-key         — SSH private key file
+//   openai-api-key          — Secret text: OpenAI API key (optional)
+//   slack-bot-token         — Secret text: Slack bot token
+//
+// Required Jenkins plugins:
+//   - Pipeline
+//   - Git
+//   - SSH Agent
+//   - Slack Notification
+//   - Ansible (for ansible-lint reporting)
+
+pipeline {
+    agent { label 'ansible-runner' }
+
+    options {
+        timeout(time: 90, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '20'))
+        disableConcurrentBuilds()
+        ansiColor('xterm')
+    }
+
+    environment {
+        ANSIBLE_FORCE_COLOR   = '1'
+        PY_COLORS             = '1'
+        VAULT_PASSWORD        = credentials('ansible-vault-password')
+        ANSIBLE_SSH_KEY_FILE  = credentials('ansible-ssh-key')
+        OPENAI_API_KEY        = credentials('openai-api-key')
+    }
+
+    stages {
+
+        stage('Stage 1: Syntax Check') {
+            steps {
+                sh '''
+                    pip3 install -q ansible-core==2.15.*
+                    ansible-galaxy collection install -r requirements.yml -q
+                    find . -name "*.yml" -path "*/playbooks/*" \
+                        ! -path "*/.github/*" ! -path "*/molecule/*" | \
+                    while read f; do
+                        echo "Checking: $f"
+                        ansible-playbook --syntax-check "$f" -i inventory/
+                    done
+                '''
+            }
+        }
+
+        stage('Stage 2: ansible-lint') {
+            steps {
+                sh '''
+                    pip3 install -q ansible-lint
+                    ansible-lint --profile production --parseable \
+                        | tee ansible-lint-results.txt
+                '''
+            }
+            post {
+                always {
+                    // Publish lint results if Jenkins Warnings plugin installed
+                    archiveArtifacts artifacts: 'ansible-lint-results.txt',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Stage 3: AI Code Review') {
+            when { changeRequest() }
+            steps {
+                sh '''
+                    pip3 install -q openai anthropic pyyaml requests
+                    git diff --name-only origin/main...HEAD \
+                        | grep -E "\\.(yml|yaml)$" \
+                        | grep -vE "^(\\.(github|molecule)|tests)" \
+                        | head -20 \
+                        | while read f; do
+                            echo "=== AI Review: $f ==="
+                            python3 chapters/ch04-llm-playbook-generation/scripts/review_playbook.py \
+                              --playbook "$f" --fail-on high || exit 1
+                          done
+                '''
+            }
+        }
+
+        stage('Stage 4: Molecule Tests') {
+            parallel {
+                stage('Test: linux_baseline') {
+                    steps {
+                        dir('roles/linux_baseline') {
+                            sh '''
+                                pip3 install -q molecule molecule-docker
+                                molecule test
+                            '''
+                        }
+                    }
+                }
+                stage('Test: cis_rhel9') {
+                    steps {
+                        dir('roles/cis_rhel9') {
+                            sh '''
+                                pip3 install -q molecule molecule-docker
+                                molecule test
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Stage 5: Security Scan') {
+            steps {
+                sh '''
+                    pip3 install -q checkov
+                    checkov --directory . --framework ansible \
+                        --output cli --output json \
+                        --output-file-path checkov-results.json \
+                        --compact \
+                        --quiet || true  # Don't fail build for now
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'checkov-results.json',
+                                     allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Stage 6: Deploy Staging') {
+            when { branch 'develop' }
+            steps {
+                sh """
+                    ansible-playbook -i inventory/ site.yml \
+                        --limit staging \
+                        --private-key \$ANSIBLE_SSH_KEY_FILE \
+                        --vault-password-file <(echo "\$VAULT_PASSWORD") \
+                        -e "deployment_id=${env.GIT_COMMIT}"
+                """
+            }
+        }
+
+        stage('Compliance Gate: Staging') {
+            when { branch 'develop' }
+            steps {
+                sh """
+                    ansible-playbook -i inventory/ \
+                        chapters/ch05-compliance-governance/playbooks/compliance_check.yml \
+                        --limit staging \
+                        --private-key \$ANSIBLE_SSH_KEY_FILE \
+                        --vault-password-file <(echo "\$VAULT_PASSWORD") \
+                        -e "min_compliance_score=90"
+                """
+            }
+        }
+
+        stage('Stage 7: Deploy Production') {
+            when { branch 'main' }
+            input {
+                message 'Deploy to production?'
+                ok 'Approve deployment'
+                submitter 'infra-lead,platform-team'
+                parameters {
+                    string(name: 'DEPLOY_REASON',
+                           description: 'Reason for deployment',
+                           defaultValue: '')
+                }
+            }
+            steps {
+                sh """
+                    ansible-playbook -i inventory/ site.yml \
+                        --limit production \
+                        --private-key \$ANSIBLE_SSH_KEY_FILE \
+                        --vault-password-file <(echo "\$VAULT_PASSWORD") \
+                        -e "serial=10%" \
+                        -e "deployment_id=${env.GIT_COMMIT}" \
+                        -e "deploy_reason=\\"\${DEPLOY_REASON}\\""
+                """
+            }
+        }
+
+        stage('Compliance Gate: Production') {
+            when { branch 'main' }
+            steps {
+                sh """
+                    ansible-playbook -i inventory/ \
+                        chapters/ch05-compliance-governance/playbooks/compliance_check.yml \
+                        --limit production \
+                        --private-key \$ANSIBLE_SSH_KEY_FILE \
+                        --vault-password-file <(echo "\$VAULT_PASSWORD") \
+                        -e "min_compliance_score=95"
+                """
+            }
+        }
+    }
+
+    post {
+        success {
+            slackSend(
+                color: 'good',
+                message: "✅ *${env.JOB_NAME}* #${env.BUILD_NUMBER} passed\n" +
+                         "Branch: ${env.GIT_BRANCH} | <${env.BUILD_URL}|View Build>"
+            )
+        }
+        failure {
+            slackSend(
+                color: 'danger',
+                message: "❌ *${env.JOB_NAME}* #${env.BUILD_NUMBER} FAILED\n" +
+                         "Branch: ${env.GIT_BRANCH} | <${env.BUILD_URL}|View Build>"
+            )
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

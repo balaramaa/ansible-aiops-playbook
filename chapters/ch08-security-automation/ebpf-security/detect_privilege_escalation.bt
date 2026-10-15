@@ -1,0 +1,48 @@
+#!/usr/bin/env bpftrace
+// detect_privilege_escalation.bt — Chapter 8, Listing 8-1
+// Real-time privilege escalation detection via eBPF
+//
+// Author : Balaramakrishna Alti
+// GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+//
+// Usage: sudo bpftrace chapters/ch08-security-automation/ebpf-security/detect_privilege_escalation.bt
+// Output: JSON events — pipe to security_event_analyzer.py or SIEM
+//
+// Requirements: kernel 5.8+, bpftrace 0.16+
+
+BEGIN {
+    printf("Monitoring privilege escalation. Ctrl-C to stop.\n");
+}
+
+// Detect setuid to root — primary privilege escalation mechanism
+tracepoint:syscalls:sys_enter_setuid {
+    if (args->uid == 0) {
+        printf("{\"event\":\"PRIV_ESC_ATTEMPT\",\"timestamp\":%llu,\"pid\":%d,\"ppid\":%d,\"comm\":\"%s\",\"target_uid\":%d}\n",
+               nsecs, pid, curtask->real_parent->pid, comm, args->uid);
+    }
+}
+
+// Detect execve by root process — flag unexpected root commands
+tracepoint:syscalls:sys_enter_execve
+/uid == 0 && comm != "sudo" && comm != "su" && comm != "sshd" && comm != "systemd"/ {
+    printf("{\"event\":\"ROOT_EXEC\",\"timestamp\":%llu,\"pid\":%d,\"comm\":\"%s\",\"exe\":\"%s\"}\n",
+           nsecs, pid, comm, str(args->filename));
+}
+
+// Detect writes to /etc/passwd or /etc/shadow
+kprobe:vfs_write {
+    $file = (struct file *)arg0;
+    $name = str($file->f_path.dentry->d_name.name);
+    if ($name == "passwd" || $name == "shadow" || $name == "sudoers") {
+        printf("{\"event\":\"SENSITIVE_FILE_WRITE\",\"timestamp\":%llu,\"pid\":%d,\"comm\":\"%s\",\"file\":\"%s\"}\n",
+               nsecs, pid, comm, $name);
+    }
+}
+
+// Detect ptrace — used in exploit chains
+tracepoint:syscalls:sys_enter_ptrace {
+    if (args->request != 0) {
+        printf("{\"event\":\"PTRACE_CALL\",\"timestamp\":%llu,\"pid\":%d,\"comm\":\"%s\",\"request\":%d}\n",
+               nsecs, pid, comm, args->request);
+    }
+}

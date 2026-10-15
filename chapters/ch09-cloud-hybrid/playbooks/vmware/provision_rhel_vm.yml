@@ -1,0 +1,128 @@
+# playbooks/vmware/provision_rhel_vm.yml
+# Chapter 9, Listing 9-5 — Provision RHEL 9 VMs on VMware vSphere
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Prerequisites:
+#   ansible-galaxy collection install community.vmware
+#   pip3 install pyvmomi
+#
+# Required variables:
+#   vm_name           — Name for the new VM
+#   vm_hostname       — OS hostname
+#   vmware_datacenter — vSphere datacenter name
+#   vmware_cluster    — vSphere cluster name
+#   vmware_datastore  — Datastore for VM disk
+#   vmware_network    — Port group / network name
+#   environment_name  — Environment label (production/staging/dev)
+#   cost_center       — Cost center for governance
+#   dns_domain        — DNS domain suffix
+#
+# Usage:
+#   export VMWARE_HOST=vcenter.company.com
+#   export VMWARE_USER=ansible@vsphere.local
+#   export VMWARE_PASSWORD=...
+#   ansible-playbook playbooks/vmware/provision_rhel_vm.yml \
+#     -e "vm_name=web-01 vm_hostname=web-01 environment_name=production ..."
+---
+- name: Provision RHEL 9 VM on VMware vSphere
+  hosts: localhost
+  gather_facts: true
+  collections:
+    - community.vmware
+
+  vars:
+    vcenter_hostname: "{{ lookup('env', 'VMWARE_HOST') }}"
+    vcenter_username: "{{ lookup('env', 'VMWARE_USER') }}"
+    vcenter_password: "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+    template_name:    "RHEL9-Template-CIS-Hardened"
+    vm_memory_mb:     "{{ vm_memory_gb | default(4) | int * 1024 }}"
+    vm_num_cpus:      "{{ vm_vcpus | default(2) }}"
+
+  tasks:
+    - name: Clone VM from CIS-hardened RHEL 9 template
+      community.vmware.vmware_guest:
+        hostname:       "{{ vcenter_hostname }}"
+        username:       "{{ vcenter_username }}"
+        password:       "{{ vcenter_password }}"
+        validate_certs: true
+        datacenter:     "{{ vmware_datacenter }}"
+        cluster:        "{{ vmware_cluster }}"
+        folder:         "/{{ vmware_datacenter }}/vm/{{ environment_name }}"
+        name:           "{{ vm_name }}"
+        template:       "{{ template_name }}"
+        state:          poweredon
+        hardware:
+          memory_mb:    "{{ vm_memory_mb }}"
+          num_cpus:     "{{ vm_num_cpus }}"
+          scsi:         paravirtual
+        disk:
+          - size_gb:    50
+            type:       thin
+            datastore:  "{{ vmware_datastore }}"
+        networks:
+          - name:       "{{ vmware_network }}"
+            ip:         "{{ vm_ip | default(omit) }}"
+            netmask:    "{{ vm_netmask | default(omit) }}"
+            gateway:    "{{ vm_gateway | default(omit) }}"
+            dns_servers: "{{ dns_servers | default(omit) }}"
+        customization:
+          hostname:     "{{ vm_hostname }}"
+          domain:       "{{ dns_domain }}"
+          dns_servers:  "{{ dns_servers | default([]) }}"
+        annotation: >
+          Managed by Ansible AIOps |
+          Environment: {{ environment_name }} |
+          CostCenter: {{ cost_center | default('unknown') }} |
+          Created: {{ ansible_date_time.iso8601 }}
+        wait_for_customization: true
+        wait_for_ip_address:    true
+      register: vm_result
+
+    - name: Set VM custom attributes for governance
+      community.vmware.vmware_guest_custom_attributes:
+        hostname:       "{{ vcenter_hostname }}"
+        username:       "{{ vcenter_username }}"
+        password:       "{{ vcenter_password }}"
+        validate_certs: true
+        name:           "{{ vm_name }}"
+        state:          present
+        attributes:
+          - name:  Environment
+            value: "{{ environment_name }}"
+          - name:  CostCenter
+            value: "{{ cost_center | default('unknown') }}"
+          - name:  ManagedBy
+            value: ansible
+          - name:  Team
+            value: "{{ team | default('platform') }}"
+          - name:  ComplianceProfile
+            value: "{{ compliance_level | default('cis_level1') }}"
+
+    - name: Add VM to in-memory inventory for immediate configuration
+      ansible.builtin.add_host:
+        hostname:        "{{ vm_result.instance.ipv4 }}"
+        groups:          ["newly_provisioned_vmware", "{{ environment_name }}"]
+        ansible_user:    ansible
+        environment_name: "{{ environment_name }}"
+
+    - name: Display VM details
+      ansible.builtin.debug:
+        msg:
+          - "VM Name  : {{ vm_name }}"
+          - "IP       : {{ vm_result.instance.ipv4 }}"
+          - "CPUs     : {{ vm_num_cpus }}"
+          - "Memory   : {{ vm_memory_mb }}MB"
+          - "Template : {{ template_name }}"
+
+- name: Apply baseline to new VMware VMs
+  hosts: newly_provisioned_vmware
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: linux_baseline
+      tags: baseline
+    - role: cis_rhel9
+      tags: cis

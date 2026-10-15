@@ -1,0 +1,125 @@
+# playbooks/auth_migration/phase1_discovery.yml
+# Chapter 8, Listing 8-9 — Authentication migration Phase 1: Discovery
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# This playbook inventories every server's current authentication configuration
+# and produces a migration readiness report.
+#
+# Usage:
+#   mkdir -p /tmp/auth_discovery
+#   ansible-playbook -i inventory/ playbooks/auth_migration/phase1_discovery.yml \
+#     --limit prod_web
+#   # Review output in /tmp/auth_discovery/*.json
+---
+- name: "Phase 1 — Authentication configuration discovery"
+  hosts: "{{ target_group | default('all') }}"
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Collect current authentication configuration
+      ansible.builtin.shell:
+        cmd: |
+          python3 -c "
+          import json, subprocess, os
+          config = {
+              'hostname': '$(hostname -f)',
+              'os': '{{ ansible_distribution }} {{ ansible_distribution_version }}',
+              'pam_sshd_md5': subprocess.run(['md5sum','/etc/pam.d/sshd'],
+                  capture_output=True,text=True).stdout.split()[0] if os.path.exists('/etc/pam.d/sshd') else None,
+              'nsswitch_passwd': open('/etc/nsswitch.conf').read()
+                  .split('passwd:')[1].split('\n')[0].strip()
+                  if 'passwd:' in open('/etc/nsswitch.conf').read() else 'unknown',
+              'sssd_running': subprocess.run(['systemctl','is-active','sssd'],
+                  capture_output=True).returncode == 0,
+              'sssd_installed': os.path.exists('/etc/sssd/sssd.conf'),
+              'ldap_configured': 'ldap' in open('/etc/nsswitch.conf').read(),
+              'freeipa_enrolled': os.path.exists('/etc/ipa/default.conf'),
+              'authorized_keys_count': int(subprocess.run(
+                  ['bash','-c','find /home /root -name authorized_keys 2>/dev/null | wc -l'],
+                  capture_output=True,text=True).stdout.strip()),
+              'sudo_nopasswd_count': int(subprocess.run(
+                  ['bash','-c','grep -r NOPASSWD /etc/sudoers /etc/sudoers.d/ 2>/dev/null | grep -v ^# | wc -l'],
+                  capture_output=True,text=True).stdout.strip()),
+          }
+          print(json.dumps(config, indent=2))
+          "
+      register: auth_config
+      changed_when: false
+      tags: discovery
+
+    - name: Ensure discovery output directory exists
+      ansible.builtin.file:
+        path: /tmp/auth_discovery
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags: discovery
+
+    - name: Save discovery results locally
+      ansible.builtin.copy:
+        content: "{{ auth_config.stdout }}"
+        dest:    "/tmp/auth_discovery/{{ inventory_hostname }}.json"
+      delegate_to: localhost
+      become: false
+      tags: discovery
+
+    - name: Assess migration readiness
+      ansible.builtin.set_fact:
+        migration_ready: >-
+          {{ (auth_config.stdout | from_json).sssd_running | bool or
+             (auth_config.stdout | from_json).ldap_configured | bool }}
+        already_migrated: >-
+          {{ (auth_config.stdout | from_json).freeipa_enrolled | bool }}
+      tags: discovery
+
+    - name: Flag servers needing manual assessment
+      ansible.builtin.debug:
+        msg: >
+          ⚠ {{ inventory_hostname }} may need manual assessment:
+          no standard auth configuration (SSSD/LDAP) detected.
+          Check: {{ auth_config.stdout | from_json }}
+      when: not migration_ready | bool and not already_migrated | bool
+      tags: discovery
+
+    - name: Flag servers already migrated
+      ansible.builtin.debug:
+        msg: "✔ {{ inventory_hostname }} already on FreeIPA/IdM — skip migration"
+      when: already_migrated | bool
+      tags: discovery
+
+- name: Generate discovery summary report
+  hosts: localhost
+  gather_facts: false
+
+  tasks:
+    - name: Aggregate discovery results
+      ansible.builtin.shell:
+        cmd: |
+          python3 -c "
+          import json, os, glob
+          files  = glob.glob('/tmp/auth_discovery/*.json')
+          report = {'total': len(files), 'ready': 0, 'needs_assessment': 0, 'already_migrated': 0, 'hosts': []}
+          for f in files:
+              d = json.load(open(f))
+              if d.get('freeipa_enrolled'): report['already_migrated'] += 1
+              elif d.get('sssd_running') or d.get('ldap_configured'): report['ready'] += 1
+              else: report['needs_assessment'] += 1
+              report['hosts'].append({'hostname': d['hostname'], 'sssd_running': d.get('sssd_running'), 'ready': d.get('sssd_running') or d.get('ldap_configured')})
+          print(json.dumps(report, indent=2))
+          "
+      register: summary
+      changed_when: false
+      tags: discovery
+
+    - name: Display migration readiness summary
+      ansible.builtin.debug:
+        msg: |
+          Authentication Migration Discovery Summary
+          ==========================================
+          {{ summary.stdout | from_json | to_nice_json }}
+      tags: discovery

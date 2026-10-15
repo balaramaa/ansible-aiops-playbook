@@ -1,0 +1,303 @@
+# .github/workflows/ansible-ci.yml
+# Chapter 10, Listing 10-6 & 10-7 — Complete infrastructure CI/CD pipeline
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Required secrets (Settings → Secrets → Actions):
+#   ANSIBLE_SSH_KEY       — Private SSH key for staging
+#   ANSIBLE_PROD_SSH_KEY  — Private SSH key for production
+#   VAULT_PASSWORD        — Ansible Vault password (staging)
+#   VAULT_PASSWORD_PROD   — Ansible Vault password (production)
+#   OPENAI_API_KEY        — OpenAI API key (optional; falls back to Anthropic)
+#   ANTHROPIC_API_KEY     — Anthropic API key (optional; falls back to Ollama)
+#   SLACK_BOT_TOKEN       — Slack bot token for notifications
+---
+name: Ansible Infrastructure CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - "roles/**"
+      - "playbooks/**"
+      - "inventory/**"
+      - "*.yml"
+  pull_request:
+    branches: [main]
+  workflow_dispatch:   # Allow manual trigger
+
+env:
+  ANSIBLE_FORCE_COLOR: "1"
+  PY_COLORS:           "1"
+  ANSIBLE_STDOUT_CALLBACK: yaml
+
+jobs:
+
+  # ── Stage 1: Syntax Check (< 15 seconds) ────────────────────────────────
+  syntax-check:
+    runs-on: ubuntu-latest
+    name: "Stage 1: Syntax Check"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Ansible
+        run: pip install ansible-core==2.15.*
+
+      - name: Install required collections
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Syntax check all playbooks
+        run: |
+          find . -name "*.yml" -path "*/playbooks/*" \
+            ! -path "*/.github/*" \
+            ! -path "*/molecule/*" | \
+          while read f; do
+            echo "Checking: $f"
+            ansible-playbook --syntax-check "$f" -i inventory/ 2>&1 || exit 1
+          done
+
+  # ── Stage 2: ansible-lint (< 30 seconds) ────────────────────────────────
+  lint:
+    runs-on: ubuntu-latest
+    name: "Stage 2: ansible-lint"
+    needs: syntax-check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run ansible-lint
+        uses: ansible/ansible-lint@v24
+        with:
+          args: "--profile production"
+
+  # ── Stage 3: AI Code Review (PR only) ───────────────────────────────────
+  ai-review:
+    runs-on: ubuntu-latest
+    name: "Stage 3: AI Security Review"
+    needs: lint
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install AI review dependencies
+        run: pip install openai anthropic pyyaml requests
+
+      - name: Find changed Ansible files
+        id: changed
+        run: |
+          FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD \
+            | grep -E "\.(yml|yaml)$" \
+            | grep -vE "^(\.github|molecule|tests)" \
+            | head -20 | tr "\n" " ")
+          echo "files=$FILES" >> $GITHUB_OUTPUT
+          echo "Changed files: $FILES"
+
+      - name: Run AI playbook review
+        if: steps.changed.outputs.files != ''
+        env:
+          OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          EXIT=0
+          for f in ${{ steps.changed.outputs.files }}; do
+            echo "=== Reviewing: $f ==="
+            python3 chapters/ch04-llm-playbook-generation/scripts/review_playbook.py \
+              --playbook "$f" --fail-on high || EXIT=1
+          done
+          exit $EXIT
+
+  # ── Stage 4: Molecule Tests ──────────────────────────────────────────────
+  molecule:
+    runs-on: ubuntu-latest
+    name: "Stage 4: Molecule (${{ matrix.role }})"
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        role:
+          - linux_baseline
+          - cis_rhel9
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install Molecule and dependencies
+        run: |
+          pip install molecule molecule-docker ansible-lint
+          pip install ansible-core==2.15.*
+
+      - name: Install Ansible collections
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: Run Molecule tests for ${{ matrix.role }}
+        run: |
+          cd roles/${{ matrix.role }}
+          molecule test
+        env:
+          PY_COLORS:            "1"
+          ANSIBLE_FORCE_COLOR:  "1"
+          MOLECULE_NO_LOG:      "false"
+
+  # ── Stage 5: Security Scan ───────────────────────────────────────────────
+  security-scan:
+    runs-on: ubuntu-latest
+    name: "Stage 5: Security Scan (Checkov)"
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Checkov IaC security scanner
+        uses: bridgecrewio/checkov-action@master
+        with:
+          directory:           "."
+          framework:           ansible
+          output_format:       sarif
+          output_file_path:    checkov-results.sarif
+          soft_fail:           false
+          quiet:               true
+
+      - name: Upload Checkov SARIF results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: checkov-results.sarif
+
+  # ── Stage 6: Deploy to Staging ───────────────────────────────────────────
+  deploy-staging:
+    runs-on: ubuntu-latest
+    name: "Stage 6: Deploy to Staging"
+    needs: [molecule, security-scan, ai-review]
+    if: |
+      github.ref == 'refs/heads/develop' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    environment: staging
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Ansible and collections
+        run: |
+          pip install ansible-core==2.15.* boto3 requests
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Configure SSH for Ansible
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/ansible_key
+          chmod 600 ~/.ssh/ansible_key
+          ssh-keyscan -H staging.company.com >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Deploy to staging
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD }}
+        run: |
+          ansible-playbook -i inventory/ site.yml \
+            --limit staging \
+            --private-key ~/.ssh/ansible_key \
+            --vault-password-file <(echo "$ANSIBLE_VAULT_PASSWORD") \
+            -e "deployment_id=${{ github.sha }}"
+
+      - name: Compliance gate — staging
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD }}
+        run: |
+          ansible-playbook -i inventory/ \
+            chapters/ch05-compliance-governance/playbooks/compliance_check.yml \
+            --limit staging \
+            --private-key ~/.ssh/ansible_key \
+            --vault-password-file <(echo "$ANSIBLE_VAULT_PASSWORD") \
+            -e "min_compliance_score=90"
+
+  # ── Stage 7: Deploy to Production ───────────────────────────────────────
+  deploy-production:
+    runs-on: ubuntu-latest
+    name: "Stage 7: Deploy to Production"
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      # Configure required reviewers at:
+      # Settings → Environments → production → Required reviewers
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Ansible and collections
+        run: |
+          pip install ansible-core==2.15.* boto3
+          ansible-galaxy collection install -r requirements.yml
+
+      - name: Configure SSH for production
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_PROD_SSH_KEY }}" > ~/.ssh/prod_key
+          chmod 600 ~/.ssh/prod_key
+
+      - name: Rolling deployment to production (10% batches)
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD_PROD }}
+        run: |
+          ansible-playbook -i inventory/ site.yml \
+            --limit production \
+            --private-key ~/.ssh/prod_key \
+            --vault-password-file <(echo "$ANSIBLE_VAULT_PASSWORD") \
+            -e "serial=10%" \
+            -e "deployment_id=${{ github.sha }}"
+
+      - name: Compliance gate — production (95% threshold)
+        env:
+          ANSIBLE_VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD_PROD }}
+        run: |
+          ansible-playbook -i inventory/ \
+            chapters/ch05-compliance-governance/playbooks/compliance_check.yml \
+            --limit production \
+            --private-key ~/.ssh/prod_key \
+            --vault-password-file <(echo "$ANSIBLE_VAULT_PASSWORD") \
+            -e "min_compliance_score=95"
+
+      - name: Notify Slack — deployment success
+        if: success()
+        uses: slackapi/slack-github-action@v1
+        with:
+          channel-id: infrastructure-deployments
+          slack-message: |
+            ✅ *Production deployment successful*
+            Commit: `${{ github.sha }}`
+            Author: ${{ github.actor }}
+            Branch: ${{ github.ref_name }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+
+      - name: Notify Slack — deployment failure
+        if: failure()
+        uses: slackapi/slack-github-action@v1
+        with:
+          channel-id: infrastructure-deployments
+          slack-message: |
+            ❌ *Production deployment FAILED*
+            Commit: `${{ github.sha }}`
+            Author: ${{ github.actor }}
+            Check: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}

@@ -1,0 +1,79 @@
+# playbooks/remediate_service.yml
+# Chapter 7, Listing 7-7 — Service restart with health validation
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Restart failed service with health validation
+  hosts: "{{ target_host }}"
+  become: true
+  gather_facts: false
+
+  vars:
+    incident_id: "SVC-{{ ansible_date_time.epoch }}"
+
+  tasks:
+    - name: Capture service status before restart
+      ansible.builtin.command:
+        cmd: "systemctl status {{ service_name }} --no-pager"
+      register: pre_status
+      changed_when: false
+      failed_when: false
+      tags: diagnostics
+
+    - name: Get recent journal for service
+      ansible.builtin.command:
+        cmd: "journalctl -u {{ service_name }} -n 20 --no-pager"
+      register: service_journal
+      changed_when: false
+      tags: diagnostics
+
+    - name: Restart service with validation
+      block:
+        - name: Restart the failed service
+          ansible.builtin.service:
+            name: "{{ service_name }}"
+            state: restarted
+
+        - name: Wait for service to stabilize
+          ansible.builtin.pause:
+            seconds: 10
+
+        - name: Refresh service facts
+          ansible.builtin.service_facts:
+
+        - name: Assert service is active
+          ansible.builtin.assert:
+            that:
+              - ansible_facts.services[service_name + '.service'].state == 'running'
+            fail_msg: >
+              Service {{ service_name }} still not running after restart.
+              Escalating: {{ incident_id }}
+
+      rescue:
+        - name: Log failed restart
+          ansible.builtin.lineinfile:
+            path: /var/log/self_healing_audit.log
+            line: >
+              {{ ansible_date_time.iso8601 }}
+              incident={{ incident_id }} type=ServiceRestart FAILED
+              host={{ inventory_hostname }} service={{ service_name }}
+            create: true
+            mode: "0640"
+
+        - name: Trigger escalation
+          ansible.builtin.fail:
+            msg: >
+              ESCALATION: {{ service_name }} failed to restart on {{ inventory_hostname }}.
+              Journal: {{ service_journal.stdout[-500:] }}
+
+    - name: Log successful restart
+      ansible.builtin.lineinfile:
+        path: /var/log/self_healing_audit.log
+        line: >
+          {{ ansible_date_time.iso8601 }}
+          incident={{ incident_id }} type=ServiceRestart SUCCESS
+          host={{ inventory_hostname }} service={{ service_name }}
+        create: true
+        mode: "0640"
+      tags: always

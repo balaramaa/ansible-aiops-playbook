@@ -1,0 +1,82 @@
+# molecule/default/molecule.yml
+# Chapter 10, Listing 10-2 — Molecule test configuration for linux_baseline
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Usage:
+#   cd roles/linux_baseline && molecule test     # Full lifecycle
+#   cd roles/linux_baseline && molecule converge # Apply role only
+#   cd roles/linux_baseline && molecule verify   # Run assertions only
+#   cd roles/linux_baseline && molecule destroy  # Destroy containers
+#
+# Requirements:
+#   pip3 install molecule molecule-docker
+#   Docker or Podman running
+---
+dependency:
+  name: galaxy
+  options:
+    requirements-file: ../../requirements.yml
+
+driver:
+  name: docker
+
+platforms:
+  # Primary test platform: Rocky Linux 9 (RHEL 9 compatible)
+  - name: rockylinux9
+    image: geerlingguy/docker-rockylinux9-ansible:latest
+    pre_build_image: true
+    privileged: true
+    command: /sbin/init
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+    groups:
+      - rhel9
+    tmpfs:
+      - /run
+      - /tmp
+
+  # Backward compatibility: Rocky Linux 8 (RHEL 8 compatible)
+  - name: rockylinux8
+    image: geerlingguy/docker-rockylinux8-ansible:latest
+    pre_build_image: true
+    privileged: true
+    command: /sbin/init
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+    groups:
+      - rhel8
+    tmpfs:
+      - /run
+      - /tmp
+
+provisioner:
+  name: ansible
+  config_options:
+    defaults:
+      callbacks_enabled: profile_tasks, timer
+      gathering: smart
+      fact_caching: jsonfile
+      fact_caching_connection: /tmp/molecule_fact_cache
+  inventory:
+    group_vars:
+      rhel9:
+        ansible_python_interpreter: /usr/bin/python3
+        # SELinux runs in permissive mode in Docker containers
+        baseline_selinux_state: permissive
+        compliance_level: cis_level1
+      rhel8:
+        ansible_python_interpreter: /usr/bin/python3
+        baseline_selinux_state: permissive
+        compliance_level: cis_level1
+
+verifier:
+  name: ansible
+
+lint: |
+  set -e
+  ansible-lint --profile production
+
+# Molecule test lifecycle:
+# create → prepare → converge → idempotency → side_effect → verify → cleanup → destroy

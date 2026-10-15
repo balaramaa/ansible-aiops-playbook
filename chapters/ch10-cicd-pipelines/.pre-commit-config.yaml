@@ -1,0 +1,63 @@
+# .pre-commit-config.yaml — Chapter 10, Listing 10-9
+# Pre-commit hooks for Ansible repository quality enforcement
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Install:
+#   pip3 install pre-commit
+#   pre-commit install
+#
+# Run manually against all files:
+#   pre-commit run --all-files
+---
+repos:
+  # ── Ansible quality ────────────────────────────────────────────────────────
+  - repo: https://github.com/ansible/ansible-lint
+    rev: v24.2.0
+    hooks:
+      - id: ansible-lint
+        name: ansible-lint
+        additional_dependencies:
+          - ansible-core>=2.15
+          - molecule>=6.0
+
+  # ── YAML formatting ────────────────────────────────────────────────────────
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        name: yamllint
+        args: [-c, .yamllint.yml]
+
+  # ── General quality ────────────────────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: detect-private-key
+        name: detect-private-key
+      - id: no-commit-to-branch
+        name: no-commit-to-main
+        args: [--branch, main]
+
+  # ── Secret detection ───────────────────────────────────────────────────────
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.4.0
+    hooks:
+      - id: detect-secrets
+        name: detect-secrets
+        args: [--baseline, .secrets.baseline]
+        exclude: |
+          (?x)^(
+            .*\.vault\.yml|
+            .*\.example|
+            tests/.*
+          )$

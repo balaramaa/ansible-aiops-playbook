@@ -1,0 +1,37 @@
+# .ansible-lint — Chapter 10, Listing 10-4
+# Enterprise ansible-lint configuration
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Run:  ansible-lint
+# Fix:  ansible-lint --fix
+# Docs: ansible.readthedocs.io/projects/lint
+---
+profile: production
+
+exclude_paths:
+  - .cache/
+  - .github/
+  - molecule/
+  - tests/
+  - "*.vault.yml"
+  - chapters/ch04-llm-playbook-generation/scripts/
+
+skip_list:
+  # Line length: some code comments are intentionally long for readability
+  - yaml[line-length]
+
+warn_list:
+  - name[casing]     # Task names — warn but don't fail
+
+use_default_rules: true
+
+min_ansible_version: "2.15"
+
+tags:
+  - safety
+  - idempotency
+  - yaml
+  - metadata
+  - no-changed-when

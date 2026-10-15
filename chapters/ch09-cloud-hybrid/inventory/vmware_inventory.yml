@@ -1,0 +1,76 @@
+# inventory/vmware_inventory.yml
+# Chapter 9, Listing 9-4 — VMware vSphere dynamic inventory plugin
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Prerequisites:
+#   ansible-galaxy collection install community.vmware
+#   pip3 install pyvmomi
+#
+# Environment variables:
+#   VMWARE_HOST      — vCenter hostname or IP
+#   VMWARE_USER      — vCenter username (e.g., ansible@vsphere.local)
+#   VMWARE_PASSWORD  — vCenter password
+#
+# Usage:
+#   ansible-inventory -i inventory/vmware_inventory.yml --list
+#   ansible-playbook -i inventory/vmware_inventory.yml site.yml
+---
+plugin: community.vmware.vmware_vm_inventory
+
+hostname:       "{{ lookup('env', 'VMWARE_HOST') }}"
+username:       "{{ lookup('env', 'VMWARE_USER') }}"
+password:       "{{ lookup('env', 'VMWARE_PASSWORD') }}"
+validate_certs: true
+port:           443
+
+# Only include powered-on VMs
+filters:
+  - runtime.powerState == "poweredOn"
+
+# Group VMs by vSphere attributes
+keyed_groups:
+  # By cluster: vmware_cluster_prod, vmware_cluster_dev
+  - key: config.cluster
+    prefix: vmware_cluster
+    separator: "_"
+
+  # By guest OS
+  - key: config.guestId
+    prefix: vmware_os
+    separator: "_"
+
+  # By datacenter
+  - key: config.datacenter
+    prefix: vmware_dc
+    separator: "_"
+
+# Compose variables from VM properties
+compose:
+  ansible_host: guest.ipAddress
+  vmware_cluster: config.cluster
+  vmware_datacenter: config.datacenter
+  vmware_num_cpus: config.hardware.numCPU
+  vmware_memory_mb: config.hardware.memoryMB
+
+# Fetch VM tags (requires vSphere 6.5+)
+with_tags: true
+
+# Properties to retrieve (minimize API calls)
+properties:
+  - name
+  - config.guestId
+  - config.cluster
+  - config.datacenter
+  - config.hardware.numCPU
+  - config.hardware.memoryMB
+  - guest.ipAddress
+  - runtime.powerState
+  - customValue
+
+# Cache inventory for 1 hour
+cache:            true
+cache_plugin:     jsonfile
+cache_connection: /tmp/vmware_inventory_cache
+cache_timeout:    3600

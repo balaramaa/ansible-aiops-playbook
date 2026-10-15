@@ -1,0 +1,160 @@
+# molecule/default/verify.yml
+# Chapter 10, Listing 10-3 — Comprehensive verification tests for linux_baseline
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Verify linux_baseline role outcomes
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    # ── Package verification ─────────────────────────────────────────────────
+    - name: Collect package facts
+      ansible.builtin.package_facts:
+        manager: rpm
+
+    - name: Assert required packages are installed
+      ansible.builtin.assert:
+        that: "item in ansible_facts.packages"
+        fail_msg:    "Required package '{{ item }}' is not installed"
+        success_msg: "Package '{{ item }}': installed ✔"
+      loop:
+        - chrony
+        - audit
+        - aide
+        - rsyslog
+
+    - name: Assert insecure packages are removed
+      ansible.builtin.assert:
+        that: "item not in ansible_facts.packages"
+        fail_msg:    "Insecure package '{{ item }}' should not be installed"
+        success_msg: "Insecure package '{{ item }}': absent ✔"
+      loop:
+        - telnet
+        - rsh
+        - ypserv
+        - tftp
+
+    # ── Service verification ─────────────────────────────────────────────────
+    - name: Collect service facts
+      ansible.builtin.service_facts:
+
+    - name: Assert chronyd is active and enabled
+      ansible.builtin.assert:
+        that:
+          - "'chronyd.service' in ansible_facts.services"
+          - ansible_facts.services['chronyd.service'].state == 'running'
+          - ansible_facts.services['chronyd.service'].status == 'enabled'
+        fail_msg:    "chronyd service is not running or enabled"
+        success_msg: "chronyd: running and enabled ✔"
+
+    - name: Assert auditd is active and enabled
+      ansible.builtin.assert:
+        that:
+          - "'auditd.service' in ansible_facts.services"
+          - ansible_facts.services['auditd.service'].state == 'running'
+        fail_msg:    "auditd service is not running"
+        success_msg: "auditd: running ✔"
+
+    # ── Sysctl verification ──────────────────────────────────────────────────
+    - name: Read kernel parameters
+      ansible.builtin.command:
+        cmd: "sysctl {{ item.key }}"
+      register: sysctl_results
+      changed_when: false
+      loop:
+        - { key: net.ipv4.tcp_syncookies,          expected: "1" }
+        - { key: net.ipv4.conf.all.rp_filter,      expected: "1" }
+        - { key: kernel.randomize_va_space,        expected: "2" }
+        - { key: fs.suid_dumpable,                 expected: "0" }
+        - { key: kernel.dmesg_restrict,            expected: "1" }
+
+    - name: Assert kernel parameters have correct values
+      ansible.builtin.assert:
+        that: >
+          item.stdout.split(' = ')[1] | trim == item.item.expected
+        fail_msg: >
+          {{ item.item.key }} = {{ item.stdout.split(' = ')[1] | trim }}
+          (expected {{ item.item.expected }})
+        success_msg: "{{ item.item.key }}={{ item.item.expected }} ✔"
+      loop: "{{ sysctl_results.results }}"
+
+    # ── SSH hardening verification ────────────────────────────────────────────
+    - name: Check SSH hardening configuration file exists
+      ansible.builtin.stat:
+        path: /etc/ssh/sshd_config.d/99-hardening.conf
+      register: ssh_config_file
+
+    - name: Assert SSH hardening file exists with correct permissions
+      ansible.builtin.assert:
+        that:
+          - ssh_config_file.stat.exists
+          - ssh_config_file.stat.mode == '0600'
+        fail_msg:    "SSH hardening file missing or wrong permissions"
+        success_msg: "SSH hardening file: exists with mode 0600 ✔"
+
+    - name: Verify SSH effective configuration
+      ansible.builtin.command:
+        cmd: sshd -T
+      register: sshd_effective
+      changed_when: false
+
+    - name: Assert SSH PermitRootLogin is disabled
+      ansible.builtin.assert:
+        that: "'permitrootlogin no' in sshd_effective.stdout"
+        fail_msg:    "SSH PermitRootLogin is not set to 'no'"
+        success_msg: "SSH PermitRootLogin: no ✔"
+
+    - name: Assert SSH MaxAuthTries is set correctly
+      ansible.builtin.assert:
+        that: "'maxauthtries 3' in sshd_effective.stdout"
+        fail_msg:    "SSH MaxAuthTries is not set to 3"
+        success_msg: "SSH MaxAuthTries: 3 ✔"
+
+    - name: Assert SSH PermitEmptyPasswords is disabled
+      ansible.builtin.assert:
+        that: "'permitemptypasswords no' in sshd_effective.stdout"
+        fail_msg:    "SSH PermitEmptyPasswords is not 'no'"
+        success_msg: "SSH PermitEmptyPasswords: no ✔"
+
+    # ── MOTD verification ────────────────────────────────────────────────────
+    - name: Read /etc/motd
+      ansible.builtin.slurp:
+        src: /etc/motd
+      register: motd_content
+
+    - name: Assert MOTD contains authorized use warning
+      ansible.builtin.assert:
+        that: "'AUTHORIZED USE ONLY' in (motd_content.content | b64decode)"
+        fail_msg:    "MOTD does not contain authorization warning"
+        success_msg: "MOTD: authorization warning present ✔"
+
+    # ── Compliance record verification ───────────────────────────────────────
+    - name: Check compliance tracking file exists
+      ansible.builtin.stat:
+        path: /etc/ansible_managed
+      register: compliance_file
+
+    - name: Assert compliance record was written
+      ansible.builtin.assert:
+        that:
+          - compliance_file.stat.exists
+          - compliance_file.stat.mode == '0444'
+        fail_msg:    "Compliance record file missing or wrong permissions"
+        success_msg: "Compliance record: present ✔"
+
+    # ── Idempotency verification ─────────────────────────────────────────────
+    - name: Apply role a second time to verify idempotency
+      ansible.builtin.include_role:
+        name: linux_baseline
+      register: idempotency_run
+
+    - name: Assert role is idempotent
+      ansible.builtin.assert:
+        that: not (idempotency_run.changed | default(false))
+        fail_msg: >
+          IDEMPOTENCY FAILURE: Role made changes on second run.
+          Check tasks that are not idempotent.
+        success_msg: "Idempotency check: PASSED ✔"

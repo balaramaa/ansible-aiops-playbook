@@ -1,0 +1,65 @@
+# roles/siem_integration/tasks/main.yml — Chapter 8, Listing 8-6
+# SIEM integration via Filebeat for centralized security log forwarding
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Add Elastic repository
+  ansible.builtin.yum_repository:
+    name:        elastic-8.x
+    description: Elastic 8.x repository
+    baseurl:     https://artifacts.elastic.co/packages/8.x/yum
+    gpgcheck:    true
+    gpgkey:      https://artifacts.elastic.co/GPG-KEY-elasticsearch
+    enabled:     true
+  tags: siem
+
+- name: Install Filebeat
+  ansible.builtin.dnf:
+    name:  filebeat
+    state: present
+  tags: siem
+
+- name: Deploy Filebeat configuration
+  ansible.builtin.template:
+    src:   filebeat.yml.j2
+    dest:  /etc/filebeat/filebeat.yml
+    owner: root
+    group: root
+    mode:  "0640"
+    validate: filebeat test config -c %s
+  notify: restart filebeat
+  tags: siem
+
+- name: Deploy SIEM CA certificate
+  ansible.builtin.copy:
+    content: "{{ siem_ca_certificate }}"
+    dest:    /etc/filebeat/ca.crt
+    owner:   root
+    group:   root
+    mode:    "0640"
+  when: siem_ca_certificate is defined
+  no_log: true
+  notify: restart filebeat
+  tags: siem
+
+- name: Enable Filebeat system and auditd modules
+  ansible.builtin.command:
+    cmd: filebeat modules enable system auditd
+  changed_when: true
+  tags: siem
+
+- name: Enable and start Filebeat
+  ansible.builtin.service:
+    name:    filebeat
+    state:   started
+    enabled: true
+  tags: siem
+
+- name: Verify Filebeat is shipping logs
+  ansible.builtin.command:
+    cmd: filebeat test output
+  register: filebeat_test
+  changed_when: false
+  failed_when: '"Connection successful" not in filebeat_test.stdout'
+  tags: [siem, verify]

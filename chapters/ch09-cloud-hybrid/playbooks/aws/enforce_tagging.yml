@@ -1,0 +1,105 @@
+# playbooks/aws/enforce_tagging.yml
+# Chapter 9, Listing 9-3 — EC2 tagging enforcement and cost governance
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Usage:
+#   # Audit only (no changes):
+#   ansible-playbook playbooks/aws/enforce_tagging.yml \
+#     -e "enforce_tagging=false aws_region=us-east-1"
+#
+#   # Stop non-compliant instances older than 7 days:
+#   ansible-playbook playbooks/aws/enforce_tagging.yml \
+#     -e "enforce_tagging=true aws_region=us-east-1"
+---
+- name: Enforce EC2 tagging compliance
+  hosts: localhost
+  gather_facts: true
+  collections:
+    - amazon.aws
+
+  vars:
+    aws_region:     "{{ aws_region | default('us-east-1') }}"
+    enforce_tagging: "{{ enforce_tagging | default(false) | bool }}"
+    warning_days:    7    # Days before stopping non-compliant instances
+    required_tags:
+      - Name
+      - Environment
+      - ManagedBy
+      - CostCenter
+      - Team
+      - Role
+
+  tasks:
+    - name: Gather all running EC2 instances
+      amazon.aws.ec2_instance_info:
+        region:  "{{ aws_region }}"
+        filters:
+          instance-state-name: running
+      register: all_instances
+
+    - name: Identify non-compliant instances (missing required tags)
+      ansible.builtin.set_fact:
+        non_compliant: >-
+          {{ all_instances.instances | selectattr('tags', 'defined') |
+             rejectattr('tags.CostCenter', 'defined') | list +
+             all_instances.instances |
+             rejectattr('tags.ManagedBy', 'defined') | list +
+             all_instances.instances |
+             rejectattr('tags.Environment', 'defined') | list }}
+
+    - name: Identify unmanaged instances (no ManagedBy=ansible tag)
+      ansible.builtin.set_fact:
+        unmanaged: >-
+          {{ all_instances.instances |
+             selectattr('tags', 'defined') |
+             rejectattr('tags.ManagedBy', 'equalto', 'ansible') | list }}
+
+    - name: Report compliance summary
+      ansible.builtin.debug:
+        msg:
+          - "Total running instances  : {{ all_instances.instances | length }}"
+          - "Non-compliant (tags)     : {{ non_compliant | length }}"
+          - "Unmanaged (no Ansible)   : {{ unmanaged | length }}"
+          - "Enforcement enabled      : {{ enforce_tagging }}"
+
+    - name: Report non-compliant instance details
+      ansible.builtin.debug:
+        msg: >
+          NON-COMPLIANT: {{ item.instance_id }}
+          Name={{ item.tags.Name | default('UNNAMED') }}
+          Launched={{ item.launch_time }}
+          Missing tags={{ required_tags |
+            difference(item.tags.keys() | list) }}
+      loop: "{{ non_compliant | unique(attribute='instance_id') }}"
+      when: non_compliant | length > 0
+
+    - name: Write compliance report to file
+      ansible.builtin.copy:
+        content: "{{ {'timestamp': ansible_date_time.iso8601,
+                       'region': aws_region,
+                       'total': all_instances.instances | length,
+                       'non_compliant': non_compliant | length,
+                       'instances': non_compliant | map(attribute='instance_id') | list
+                      } | to_nice_json }}"
+        dest: "/tmp/ec2_tagging_report_{{ ansible_date_time.date }}.json"
+        mode: "0644"
+
+    - name: Stop non-compliant instances after warning period
+      amazon.aws.ec2_instance:
+        instance_ids: "{{ item.instance_id }}"
+        region:       "{{ aws_region }}"
+        state:        stopped
+      loop: "{{ non_compliant | unique(attribute='instance_id') }}"
+      when:
+        - enforce_tagging | bool
+        - (ansible_date_time.iso8601 | to_datetime('%Y-%m-%dT%H:%M:%S+00:00') -
+           item.launch_time | to_datetime('%Y-%m-%dT%H:%M:%S+00:00')).days
+          >= warning_days
+      register: stopped_instances
+
+    - name: Report enforcement actions taken
+      ansible.builtin.debug:
+        msg: "Stopped {{ stopped_instances.results | selectattr('changed') | list | length }} non-compliant instances"
+      when: enforce_tagging | bool

@@ -1,0 +1,50 @@
+# inventory/nutanix_inventory.yml
+# Chapter 9, Listing 9-6 — Nutanix AHV dynamic inventory plugin
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Prerequisites:
+#   ansible-galaxy collection install nutanix.ncp
+#   pip3 install requests
+#
+# Environment variables:
+#   NUTANIX_HOST  — Prism Central hostname or IP
+#   NUTANIX_USER  — Prism Central username
+#   NUTANIX_PASS  — Prism Central password
+#
+# Usage:
+#   ansible-inventory -i inventory/nutanix_inventory.yml --list
+---
+plugin: nutanix.ncp.ntnx_inventory
+
+nutanix_host:     "{{ lookup('env', 'NUTANIX_HOST') }}"
+nutanix_username: "{{ lookup('env', 'NUTANIX_USER') }}"
+nutanix_password: "{{ lookup('env', 'NUTANIX_PASS') }}"
+nutanix_port:     9440
+validate_certs:   true
+
+# Group VMs by Nutanix categories (governance metadata)
+keyed_groups:
+  - key: metadata.categories.Environment
+    prefix: nutanix_env
+    separator: "_"
+  - key: metadata.categories.Team
+    prefix: nutanix_team
+    separator: "_"
+  - key: metadata.categories.Role
+    prefix: nutanix_role
+    separator: "_"
+  - key: status.cluster_reference.name
+    prefix: nutanix_cluster
+    separator: "_"
+
+# Use the first NIC IP as the Ansible connection address
+compose:
+  ansible_host: status.resources.nic_list[0].ip_endpoint_list[0].ip
+
+# Cache to reduce Prism Central API load
+cache:            true
+cache_plugin:     jsonfile
+cache_connection: /tmp/nutanix_inventory_cache
+cache_timeout:    3600
