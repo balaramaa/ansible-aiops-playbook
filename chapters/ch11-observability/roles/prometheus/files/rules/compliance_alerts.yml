@@ -1,0 +1,60 @@
+# /etc/prometheus/rules/compliance_alerts.yml
+# Chapter 11 — Compliance alerting rules using custom Ansible metrics
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+groups:
+  - name: compliance
+    interval: 60s
+    rules:
+
+      # ── Compliance score below threshold ───────────────────────────────
+      - alert: ComplianceScoreCritical
+        expr: ansible_compliance_score < 90
+        for: 5m
+        labels:
+          severity: critical
+          team: security
+        annotations:
+          summary: "Compliance score critical on {{ $labels.host }}"
+          description: >
+            CIS compliance score is {{ $value }}% on {{ $labels.host }}.
+            Minimum required: 90%. Automated remediation will trigger.
+
+      - alert: ComplianceScoreWarning
+        expr: ansible_compliance_score < 95
+        for: 15m
+        labels:
+          severity: warning
+          team: security
+        annotations:
+          summary: "Compliance score below target on {{ $labels.host }}"
+          description: >
+            CIS compliance score is {{ $value }}% (target: 95%) on {{ $labels.host }}.
+
+      # ── Patch currency ─────────────────────────────────────────────────
+      - alert: PatchOverdue
+        expr: ansible_days_since_last_patch > 30
+        for: 1h
+        labels:
+          severity: high
+          team: infrastructure
+        annotations:
+          summary: "Patch overdue on {{ $labels.host }}"
+          description: >
+            {{ $labels.host }} has not been patched in {{ $value }} days.
+            Maximum acceptable: 30 days.
+
+      # ── Unmanaged hosts ────────────────────────────────────────────────
+      - alert: HostNotAnsibleManaged
+        expr: ansible_managed == 0 or absent(ansible_managed)
+        for: 30m
+        labels:
+          severity: warning
+          team: infrastructure
+        annotations:
+          summary: "Host not managed by Ansible: {{ $labels.host }}"
+          description: >
+            {{ $labels.host }} is not showing Ansible-managed metrics.
+            Host may be drifting from baseline configuration.

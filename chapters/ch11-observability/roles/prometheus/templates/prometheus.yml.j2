@@ -1,0 +1,66 @@
+{# roles/prometheus/templates/prometheus.yml.j2 — Chapter 11, Listing 11-2 #}
+{# Author: Balaramakrishna Alti #}
+{# Managed by Ansible — do not edit manually #}
+---
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  scrape_timeout:      10s
+  external_labels:
+    datacenter:  "{{ datacenter | default('primary') }}"
+    environment: "{{ environment_name | default('production') }}"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - "{{ alertmanager_host | default('localhost') }}:9093"
+      timeout: 10s
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Linux node metrics via node_exporter
+  # Targets auto-registered by update_prometheus_targets.yml playbook
+  - job_name: node
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/nodes_*.yml
+        refresh_interval: 60s
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label:  instance
+      - source_labels: [environment]
+        target_label:  environment
+      - source_labels: [host_role]
+        target_label:  host_role
+
+  # Alertmanager
+  - job_name: alertmanager
+    static_configs:
+      - targets:
+          - "{{ alertmanager_host | default('localhost') }}:9093"
+
+  # Grafana
+  - job_name: grafana
+    static_configs:
+      - targets:
+          - "{{ grafana_host | default('localhost') }}:3000"
+    metrics_path: /metrics
+
+  # Ansible Automation Platform metrics
+  - job_name: aap
+    static_configs:
+      - targets:
+          - "{{ aap_host | default('localhost') }}:8080"
+    metrics_path: /api/v2/metrics
+    bearer_token: "{{ aap_metrics_token | default('') }}"
+    scheme: https
+    tls_config:
+      insecure_skip_verify: false

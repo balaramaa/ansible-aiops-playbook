@@ -1,0 +1,77 @@
+# playbooks/deploy_observability.yml
+# Chapter 11 — Deploy complete observability stack
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Usage:
+#   # Deploy everything
+#   ansible-playbook -i inventory/ playbooks/deploy_observability.yml
+#
+#   # Deploy only node_exporter (most common)
+#   ansible-playbook -i inventory/ playbooks/deploy_observability.yml \
+#     --tags node_exporter
+#
+#   # Deploy Prometheus server only
+#   ansible-playbook -i inventory/ playbooks/deploy_observability.yml \
+#     --limit prometheus_server --tags prometheus
+---
+- name: Deploy Prometheus and Alertmanager
+  hosts: prometheus_server
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: prometheus
+      tags: prometheus
+
+- name: Deploy Grafana
+  hosts: grafana_server
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: grafana
+      tags: grafana
+
+- name: Deploy Loki log aggregation
+  hosts: loki_server
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Install Loki via Docker Compose
+      ansible.builtin.template:
+        src:  loki-docker-compose.yml.j2
+        dest: /opt/loki/docker-compose.yml
+        mode: "0644"
+      tags: loki
+
+- name: Deploy node_exporter on all managed nodes
+  hosts: all
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: node_exporter
+      tags: node_exporter
+
+- name: Deploy Promtail log shipper on all managed nodes
+  hosts: all
+  become: true
+  gather_facts: true
+
+  roles:
+    - role: promtail
+      tags: promtail
+
+- name: Register all nodes as Prometheus scrape targets
+  hosts: prometheus_server
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Update Prometheus scrape targets
+      ansible.builtin.include_tasks:
+        file: update_prometheus_targets.yml
+      tags: prometheus

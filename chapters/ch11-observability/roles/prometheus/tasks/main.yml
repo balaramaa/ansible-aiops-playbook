@@ -1,0 +1,109 @@
+# roles/prometheus/tasks/main.yml
+# Chapter 11, Listing 11-1 — Prometheus server deployment
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+---
+- name: Create Prometheus system user
+  ansible.builtin.user:
+    name:        prometheus
+    system:      true
+    shell:       /sbin/nologin
+    home:        /var/lib/prometheus
+    create_home: true
+  tags: prometheus
+
+- name: Create Prometheus directories
+  ansible.builtin.file:
+    path:  "{{ item }}"
+    state: directory
+    owner: prometheus
+    group: prometheus
+    mode:  "0755"
+  loop:
+    - /etc/prometheus
+    - /etc/prometheus/rules
+    - /etc/prometheus/targets
+    - /var/lib/prometheus
+  tags: prometheus
+
+- name: Download Prometheus archive
+  ansible.builtin.get_url:
+    url: >
+      https://github.com/prometheus/prometheus/releases/download/
+      v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz
+    dest:     /tmp/prometheus-{{ prometheus_version }}.tar.gz
+    checksum: "sha256:{{ prometheus_checksum }}"
+    mode:     "0644"
+  tags: prometheus
+
+- name: Extract Prometheus
+  ansible.builtin.unarchive:
+    src:        /tmp/prometheus-{{ prometheus_version }}.tar.gz
+    dest:       /tmp/
+    remote_src: true
+  tags: prometheus
+
+- name: Install Prometheus binaries
+  ansible.builtin.copy:
+    src:        "/tmp/prometheus-{{ prometheus_version }}.linux-amd64/{{ item }}"
+    dest:       "/usr/local/bin/{{ item }}"
+    remote_src: true
+    owner:      root
+    group:      root
+    mode:       "0755"
+  loop: [prometheus, promtool]
+  notify: restart prometheus
+  tags: prometheus
+
+- name: Deploy Prometheus configuration
+  ansible.builtin.template:
+    src:   prometheus.yml.j2
+    dest:  /etc/prometheus/prometheus.yml
+    owner: prometheus
+    group: prometheus
+    mode:  "0644"
+    validate: promtool check config %s
+  notify: restart prometheus
+  tags: prometheus
+
+- name: Deploy infrastructure alerting rules
+  ansible.builtin.template:
+    src:   "rules/{{ item }}"
+    dest:  "/etc/prometheus/rules/{{ item | replace('.j2', '') }}"
+    owner: prometheus
+    group: prometheus
+    mode:  "0644"
+  loop:
+    - infra_alerts.yml.j2
+    - compliance_alerts.yml.j2
+    - self_healing_alerts.yml.j2
+  notify: reload prometheus
+  tags: [prometheus, alerting]
+
+- name: Deploy Prometheus systemd service
+  ansible.builtin.template:
+    src:   prometheus.service.j2
+    dest:  /etc/systemd/system/prometheus.service
+    owner: root
+    group: root
+    mode:  "0644"
+  notify:
+    - daemon-reload
+    - restart prometheus
+  tags: prometheus
+
+- name: Open Prometheus port in firewall
+  ansible.posix.firewalld:
+    port:      "9090/tcp"
+    permanent: true
+    state:     enabled
+    immediate: true
+  tags: prometheus
+
+- name: Enable and start Prometheus
+  ansible.builtin.service:
+    name:    prometheus
+    state:   started
+    enabled: true
+  tags: prometheus

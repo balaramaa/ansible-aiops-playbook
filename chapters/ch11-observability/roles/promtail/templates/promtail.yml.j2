@@ -1,0 +1,86 @@
+{# roles/promtail/templates/promtail.yml.j2 — Chapter 11, Listing 11-9 #}
+{# Author: Balaramakrishna Alti #}
+{# Managed by Ansible — do not edit manually #}
+---
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+  log_level: warn
+
+positions:
+  filename: /var/lib/promtail/positions.yaml
+
+clients:
+  - url: http://{{ loki_host | default('localhost') }}:3100/loki/api/v1/push
+
+scrape_configs:
+
+  # ── System journal ─────────────────────────────────────────────────────────
+  - job_name: journal
+    journal:
+      max_age:  12h
+      path:     /var/log/journal
+      labels:
+        job:         journal
+        host:        "{{ ansible_hostname }}"
+        environment: "{{ environment_name | default('unknown') }}"
+    relabel_configs:
+      - source_labels: [__journal__systemd_unit]
+        target_label:  unit
+      - source_labels: [__journal_priority_keyword]
+        target_label:  level
+
+  # ── Audit log (Chapter 2, 5) ───────────────────────────────────────────────
+  - job_name: audit
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job:      audit
+          host:     "{{ ansible_hostname }}"
+          __path__: /var/log/audit/audit.log
+    pipeline_stages:
+      - regex:
+          expression: 'type=(?P<audit_type>\w+)'
+      - labels:
+          audit_type:
+
+  # ── Self-healing audit log (Chapter 7) ────────────────────────────────────
+  - job_name: self_healing
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job:      self_healing
+          host:     "{{ ansible_hostname }}"
+          __path__: /var/log/self_healing_audit.log
+
+  # ── Patch governance log (Chapter 6) ─────────────────────────────────────
+  - job_name: patch_governance
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job:      patch_governance
+          host:     "{{ ansible_hostname }}"
+          __path__: /var/log/patch_governance_audit.jsonl
+    pipeline_stages:
+      - json:
+          expressions:
+            status:   status
+            risk_tier: risk_tier
+
+  # ── Compliance reports (Chapter 5) ────────────────────────────────────────
+  - job_name: compliance
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job:      compliance
+          host:     "{{ ansible_hostname }}"
+          __path__: /var/log/compliance/*.log
+
+  # ── Security events (Chapter 8) ───────────────────────────────────────────
+  - job_name: security_events
+    static_configs:
+      - targets: [localhost]
+        labels:
+          job:      security
+          host:     "{{ ansible_hostname }}"
+          __path__: /var/log/security_events.jsonl

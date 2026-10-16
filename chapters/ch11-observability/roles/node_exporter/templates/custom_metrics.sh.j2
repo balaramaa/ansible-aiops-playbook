@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# custom_metrics.sh — Chapter 11, Listing 11-5
+# Generate custom Prometheus metrics for Ansible automation events
+# Deployed by node_exporter role to /etc/cron.d/node_exporter_metrics
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Runs every 5 minutes via cron
+# Output read by node_exporter textfile collector
+
+set -euo pipefail
+
+METRICS_FILE="/var/lib/node_exporter/textfile_collector/ansible_automation.prom"
+TEMP_FILE="$(mktemp /tmp/metrics.XXXXXX)"
+HOSTNAME="{{ ansible_hostname }}"
+
+cleanup() { rm -f "${TEMP_FILE}"; }
+trap cleanup EXIT
+
+# ── Compliance score ──────────────────────────────────────────────────────────
+COMPLIANCE_SCORE=0
+LATEST_SCAN=$(ls -t /var/log/compliance/results-*.xml 2>/dev/null | head -1 || true)
+if [[ -n "${LATEST_SCAN}" && -f "${LATEST_SCAN}" ]]; then
+    COMPLIANCE_SCORE=$(python3 -c "
+import xml.etree.ElementTree as ET, sys
+try:
+    tree = ET.parse('${LATEST_SCAN}')
+    root = tree.getroot()
+    ns = {'xccdf': 'http://checklists.nist.gov/xccdf/1.2'}
+    scores = root.findall('.//xccdf:score', ns)
+    print(round(float(scores[0].text), 2) if scores else 0)
+except Exception: print(0)
+" 2>/dev/null || echo 0)
+fi
+
+# ── Self-healing events ───────────────────────────────────────────────────────
+HEALED_TODAY=0
+ESCALATED_TODAY=0
+AUDIT_LOG="/var/log/self_healing_audit.log"
+if [[ -f "${AUDIT_LOG}" ]]; then
+    TODAY=$(date +%Y-%m-%d)
+    HEALED_TODAY=$(grep -c "${TODAY}.*SUCCESS" "${AUDIT_LOG}" 2>/dev/null || echo 0)
+    ESCALATED_TODAY=$(grep -c "${TODAY}.*ESCALAT" "${AUDIT_LOG}" 2>/dev/null || echo 0)
+fi
+
+# ── Patch currency ────────────────────────────────────────────────────────────
+DAYS_SINCE_PATCH=0
+PATCH_LOG="/var/log/patch_governance_audit.jsonl"
+if [[ -f "${PATCH_LOG}" ]]; then
+    LAST_PATCH=$(tail -1 "${PATCH_LOG}" | \
+        python3 -c "import json,sys
+try:
+    d=json.load(sys.stdin)
+    print(d.get('executed_at','')[:10])
+except: print('')
+" 2>/dev/null || echo "")
+    if [[ -n "${LAST_PATCH}" && "${LAST_PATCH}" != "" ]]; then
+        DAYS_SINCE_PATCH=$(( ($(date +%s) - $(date -d "${LAST_PATCH}" +%s 2>/dev/null || echo "$(date +%s)")) / 86400 ))
+    fi
+fi
+
+# ── Write Prometheus text format (atomic) ─────────────────────────────────────
+cat > "${TEMP_FILE}" << EOF
+# HELP ansible_compliance_score CIS compliance score from latest OpenSCAP scan (0-100)
+# TYPE ansible_compliance_score gauge
+ansible_compliance_score{host="${HOSTNAME}"} ${COMPLIANCE_SCORE}
+
+# HELP ansible_self_healing_events_total Auto-remediated incidents count for today
+# TYPE ansible_self_healing_events_total counter
+ansible_self_healing_events_total{host="${HOSTNAME}",outcome="success"} ${HEALED_TODAY}
+ansible_self_healing_events_total{host="${HOSTNAME}",outcome="escalated"} ${ESCALATED_TODAY}
+
+# HELP ansible_days_since_last_patch Days elapsed since last automated patch run
+# TYPE ansible_days_since_last_patch gauge
+ansible_days_since_last_patch{host="${HOSTNAME}"} ${DAYS_SINCE_PATCH}
+
+# HELP ansible_managed Info metric: 1 if this host is Ansible-managed
+# TYPE ansible_managed gauge
+ansible_managed{host="${HOSTNAME}",environment="{{ environment_name | default('unknown') }}"} 1
+EOF
+
+# Atomic rename — avoids Prometheus reading partial file
+mv "${TEMP_FILE}" "${METRICS_FILE}"
+chmod 644 "${METRICS_FILE}"

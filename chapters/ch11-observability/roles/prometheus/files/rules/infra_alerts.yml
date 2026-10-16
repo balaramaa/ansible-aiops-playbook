@@ -1,0 +1,92 @@
+# /etc/prometheus/rules/infra_alerts.yml
+# Chapter 11 — Infrastructure alerting rules for self-healing integration
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# These alerts integrate with EDA rulebook (Chapter 7):
+# ansible.eda.alertmanager source receives these as events
+---
+groups:
+  - name: infrastructure
+    interval: 30s
+    rules:
+
+      # ── Memory pressure ────────────────────────────────────────────────
+      - alert: HighMemoryUsage
+        expr: >
+          (1 - node_memory_MemAvailable_bytes /
+               node_memory_MemTotal_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "High memory usage on {{ $labels.instance }}"
+          description: >
+            Memory usage is {{ $value | humanize }}% on {{ $labels.instance }}.
+            Threshold: 90%. EDA will trigger automated remediation.
+
+      - alert: HighMemoryWarning
+        expr: >
+          (1 - node_memory_MemAvailable_bytes /
+               node_memory_MemTotal_bytes) * 100 > 80
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Memory usage elevated on {{ $labels.instance }}"
+
+      # ── Disk space ─────────────────────────────────────────────────────
+      - alert: DiskSpaceCritical
+        expr: >
+          (1 - node_filesystem_avail_bytes{fstype!="tmpfs",mountpoint="/"} /
+               node_filesystem_size_bytes{fstype!="tmpfs",mountpoint="/"}) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "Disk space critical on {{ $labels.instance }}"
+          description: >
+            Disk {{ $labels.mountpoint }} is {{ $value | humanize }}% full
+            on {{ $labels.instance }}. EDA will trigger cleanup.
+
+      # ── Service availability ───────────────────────────────────────────
+      - alert: ServiceDown
+        expr: up{job="node"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "Node exporter unreachable: {{ $labels.instance }}"
+          description: >
+            Cannot reach node_exporter on {{ $labels.instance }}.
+            Host may be down or SSH access blocked.
+
+      # ── CPU ────────────────────────────────────────────────────────────
+      - alert: HighCPUUsage
+        expr: >
+          100 - (avg by (instance) (
+            rate(node_cpu_seconds_total{mode="idle"}[5m])
+          )) * 100 > 95
+        for: 10m
+        labels:
+          severity: critical
+          team: infrastructure
+        annotations:
+          summary: "CPU saturation on {{ $labels.instance }}"
+          description: "CPU usage {{ $value | humanize }}% for 10+ minutes"
+
+      # ── Load average ────────────────────────────────────────────────────
+      - alert: HighLoadAverage
+        expr: >
+          node_load5 / count without (cpu, mode) (
+            node_cpu_seconds_total{mode="idle"}
+          ) > 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High load average on {{ $labels.instance }}"
