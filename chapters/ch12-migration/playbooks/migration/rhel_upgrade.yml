@@ -1,0 +1,197 @@
+# playbooks/migration/rhel_upgrade.yml
+# Chapter 12, Listing 12-5 — In-place RHEL 7/8 to RHEL 9 upgrade with Leapp
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Prerequisites:
+#   - Red Hat subscription (or RHEL content mirror)
+#   - leapp package available in repo
+#   - 20GB+ free disk space on /
+#   - Server accessible on management network after reboot
+#
+# Usage:
+#   # Pre-flight check only
+#   ansible-playbook -i inventory/ \
+#     chapters/ch12-migration/playbooks/migration/rhel_upgrade.yml \
+#     --limit rhel7_targets --tags preflight
+#
+#   # Full upgrade (one server at a time by default)
+#   ansible-playbook -i inventory/ \
+#     chapters/ch12-migration/playbooks/migration/rhel_upgrade.yml \
+#     --limit rhel7_targets -e "upgrade_serial=1"
+---
+- name: In-place RHEL upgrade to RHEL 9 using Leapp
+  hosts: "{{ upgrade_targets | default('rhel_upgrade_targets') }}"
+  become: true
+  gather_facts: true
+  serial: "{{ upgrade_serial | default(1) }}"   # Conservative: 1 at a time by default
+
+  pre_tasks:
+    - name: Verify OS is RHEL/Rocky 7 or 8
+      ansible.builtin.assert:
+        that:
+          - ansible_os_family == "RedHat"
+          - ansible_distribution_major_version | int in [7, 8]
+        fail_msg: >
+          This playbook upgrades RHEL/Rocky 7 or 8 only.
+          Found: {{ ansible_distribution }} {{ ansible_distribution_version }}
+          on {{ inventory_hostname }}.
+      tags: always
+
+    - name: Check available disk space on /
+      ansible.builtin.shell:
+        cmd: df --output=avail / | tail -1
+      register: disk_avail_kb
+      changed_when: false
+
+    - name: Assert sufficient disk space (20 GB minimum)
+      ansible.builtin.assert:
+        that: disk_avail_kb.stdout | int >= 20971520  # 20 GB in KB
+        fail_msg: >
+          Insufficient disk space on {{ inventory_hostname }}.
+          Available: {{ (disk_avail_kb.stdout | int / 1024 / 1024) | round(1) }} GB
+          Required:  20 GB minimum
+      tags: preflight
+
+    - name: Install Leapp upgrade tooling
+      ansible.builtin.dnf:
+        name:
+          - leapp
+          - leapp-upgrade
+        state: present
+      tags: [install, preflight]
+
+    - name: Run Leapp pre-upgrade assessment
+      ansible.builtin.command:
+        cmd: leapp preupgrade --no-rhsm
+      register: leapp_preupgrade
+      changed_when: false
+      failed_when: false
+      tags: preflight
+
+    - name: Check for upgrade inhibitors
+      ansible.builtin.shell:
+        cmd: >
+          grep -c "inhibitor" /var/log/leapp/leapp-report.txt 2>/dev/null || echo 0
+      register: inhibitor_count
+      changed_when: false
+      tags: preflight
+
+    - name: Report all inhibitors
+      ansible.builtin.shell:
+        cmd: >
+          grep -A3 "inhibitor" /var/log/leapp/leapp-report.txt 2>/dev/null
+          || echo "No inhibitors found"
+      register: inhibitor_details
+      changed_when: false
+      tags: preflight
+
+    - name: Display inhibitor details
+      ansible.builtin.debug:
+        msg: "{{ inhibitor_details.stdout_lines }}"
+      when: inhibitor_count.stdout | int > 0
+      tags: preflight
+
+    - name: Halt if inhibitors found
+      ansible.builtin.fail:
+        msg: >
+          Leapp reports {{ inhibitor_count.stdout }} inhibitor(s) on {{ inventory_hostname }}.
+          Review /var/log/leapp/leapp-report.txt and resolve all inhibitors
+          before running this playbook again.
+      when: inhibitor_count.stdout | int > 0
+      tags: preflight
+
+  tasks:
+    - name: Create pre-upgrade backup archive
+      ansible.builtin.shell:
+        cmd: >
+          BACKUP_FILE="/var/backups/pre_upgrade_{{ ansible_distribution_major_version
+            }}_to_9_{{ ansible_date_time.date }}.tar.gz" &&
+          tar czf "${BACKUP_FILE}" /etc /var/log 2>/dev/null
+          --exclude=/var/log/lastlog
+          --exclude=/var/log/wtmp &&
+          echo "Backup: $(du -sh ${BACKUP_FILE} | cut -f1)"
+      changed_when: true
+      register: backup_result
+      tags: backup
+
+    - name: Display backup information
+      ansible.builtin.debug:
+        msg: "{{ backup_result.stdout }}"
+      tags: backup
+
+    - name: Log upgrade start
+      ansible.builtin.lineinfile:
+        path:   /var/log/migration_audit.log
+        line: >
+          {{ ansible_date_time.iso8601 }} RHEL_UPGRADE_START
+          host={{ inventory_hostname }}
+          from={{ ansible_distribution }}_{{ ansible_distribution_version }}
+          to=RHEL_9
+        create: true
+        mode:   "0640"
+      tags: always
+
+    - name: Execute Leapp upgrade (server will reboot automatically)
+      ansible.builtin.command:
+        cmd: leapp upgrade --no-rhsm
+      register: leapp_upgrade
+      async:   3600    # Allow up to 1 hour for upgrade + reboot
+      poll:    0
+      changed_when: true
+      tags: upgrade
+
+    - name: Wait for server to reboot and come back online
+      ansible.builtin.wait_for_connection:
+        delay:         90     # Wait 90s before first check
+        sleep:         15     # Check every 15s
+        timeout:       900    # Max 15 minutes
+        connect_timeout: 10
+      tags: upgrade
+
+  post_tasks:
+    - name: Refresh Ansible facts after upgrade
+      ansible.builtin.setup:
+      tags: verify
+
+    - name: Assert upgrade to RHEL 9 succeeded
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution_major_version | int >= 9
+        fail_msg: >
+          Upgrade may have failed on {{ inventory_hostname }}.
+          Still running: {{ ansible_distribution }} {{ ansible_distribution_version }}
+        success_msg: >
+          Upgrade successful: {{ ansible_distribution }} {{ ansible_distribution_version }}
+      tags: verify
+
+    - name: Apply CIS RHEL 9 baseline post-upgrade
+      ansible.builtin.include_role:
+        name: cis_rhel9
+      tags: cis
+
+    - name: Run post-upgrade compliance scan
+      ansible.builtin.command:
+        cmd: >
+          oscap xccdf eval
+          --profile xccdf_org.ssgproject.content_profile_cis_server_l1
+          --results /var/log/compliance/post_upgrade_{{ ansible_date_time.date }}.xml
+          /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
+      register: post_scan
+      failed_when: post_scan.rc not in [0, 2]
+      changed_when: false
+      when: ansible_facts.packages.get('scap-security-guide') is not none
+      tags: verify
+
+    - name: Log upgrade completion
+      ansible.builtin.lineinfile:
+        path:   /var/log/migration_audit.log
+        line: >
+          {{ ansible_date_time.iso8601 }} RHEL_UPGRADE_COMPLETE
+          host={{ inventory_hostname }}
+          result={{ ansible_distribution }}_{{ ansible_distribution_version }}
+          kernel={{ ansible_kernel }}
+        create: true
+        mode:   "0640"
+      tags: always

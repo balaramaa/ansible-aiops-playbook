@@ -1,0 +1,246 @@
+# playbooks/migration/phase1_discovery.yml
+# Chapter 12, Listing 12-1 — Phase 1: Read-only environment discovery
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# IMPORTANT: This playbook makes NO changes to target systems.
+# It only collects information and copies it to the control node.
+#
+# Usage:
+#   ansible-playbook -i inventory/ \
+#     chapters/ch12-migration/playbooks/migration/phase1_discovery.yml \
+#     --limit acquisition_targets \
+#     -e "migration_name=rms-integration"
+#
+#   # Results saved to:
+#   # /tmp/migration_discovery/<migration_name>-<date>/<hostname>.json
+---
+- name: Phase 1 — Discover and inventory target environment
+  hosts: "{{ target_group | default('acquisition_targets') }}"
+  become: true
+  gather_facts: true
+  any_errors_fatal: false   # Continue even if some hosts are unreachable
+
+  vars:
+    migration_id:        "{{ migration_name }}-{{ ansible_date_time.date }}"
+    discovery_output_dir: "/tmp/migration_discovery/{{ migration_id }}"
+
+  tasks:
+    - name: Create local discovery output directory
+      ansible.builtin.file:
+        path:  "{{ discovery_output_dir }}"
+        state: directory
+        mode:  "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      tags: discovery
+
+    # ── Collect host profile ──────────────────────────────────────────────
+    - name: Collect OS and hardware profile
+      ansible.builtin.set_fact:
+        host_profile:
+          hostname:        "{{ ansible_fqdn }}"
+          short_hostname:  "{{ ansible_hostname }}"
+          ip:              "{{ ansible_default_ipv4.address | default('unknown') }}"
+          os:              "{{ ansible_distribution }}"
+          os_version:      "{{ ansible_distribution_version }}"
+          os_major:        "{{ ansible_distribution_major_version }}"
+          os_family:       "{{ ansible_os_family }}"
+          kernel:          "{{ ansible_kernel }}"
+          arch:            "{{ ansible_architecture }}"
+          cpu_count:       "{{ ansible_processor_vcpus }}"
+          memory_mb:       "{{ ansible_memtotal_mb }}"
+          virtualization:  "{{ ansible_virtualization_type }}"
+          selinux_status:  "{{ ansible_selinux.status }}"
+          selinux_mode:    "{{ ansible_selinux.mode | default('unknown') }}"
+          uptime_seconds:  "{{ ansible_uptime_seconds }}"
+      tags: discovery
+
+    # ── Collect services ──────────────────────────────────────────────────
+    - name: Collect running service list
+      ansible.builtin.service_facts:
+      tags: discovery
+
+    # ── Collect packages ──────────────────────────────────────────────────
+    - name: Collect installed packages
+      ansible.builtin.package_facts:
+        manager: auto
+      tags: discovery
+
+    # ── Collect network configuration ─────────────────────────────────────
+    - name: Collect network profile
+      ansible.builtin.set_fact:
+        network_profile:
+          interfaces:   "{{ ansible_interfaces }}"
+          default_ipv4: "{{ ansible_default_ipv4 | default({}) }}"
+          dns_servers:  "{{ ansible_dns.nameservers | default([]) }}"
+          dns_search:   "{{ ansible_dns.search | default([]) }}"
+          hostname:     "{{ ansible_hostname }}"
+          domain:       "{{ ansible_domain | default('') }}"
+      tags: discovery
+
+    # ── Check existing tooling ────────────────────────────────────────────
+    - name: Check for existing Ansible management
+      ansible.builtin.stat:
+        path: /etc/ansible_managed
+      register: ansible_managed_file
+      tags: discovery
+
+    - name: Check for existing monitoring agents
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+      loop:
+        - { path: /usr/bin/node_exporter,    name: node_exporter }
+        - { path: /usr/bin/filebeat,          name: filebeat }
+        - { path: /usr/sbin/zabbix_agent,    name: zabbix }
+        - { path: /usr/bin/telegraf,          name: telegraf }
+        - { path: /usr/bin/collectd,          name: collectd }
+      register: monitoring_agent_checks
+      tags: discovery
+
+    - name: Check for configuration management agents
+      ansible.builtin.stat:
+        path: "{{ item.path }}"
+      loop:
+        - { path: /usr/bin/puppet,   name: puppet }
+        - { path: /usr/bin/chef-client, name: chef }
+        - { path: /usr/bin/salt-minion, name: salt }
+      register: cm_agent_checks
+      tags: discovery
+
+    # ── Collect security posture ──────────────────────────────────────────
+    - name: Count SSH authorized keys across all users
+      ansible.builtin.shell:
+        cmd: >
+          find /home /root -name authorized_keys 2>/dev/null
+          | xargs -I{} wc -l {} 2>/dev/null
+          | awk '{sum+=$1} END{print sum+0}'
+      register: ssh_keys_count
+      changed_when: false
+      failed_when: false
+      tags: discovery
+
+    - name: Check for AIDE installation
+      ansible.builtin.stat:
+        path: /usr/sbin/aide
+      register: aide_check
+      tags: discovery
+
+    - name: Check for auditd status
+      ansible.builtin.service_facts:
+      tags: discovery
+
+    - name: Count sudoers NOPASSWD entries
+      ansible.builtin.shell:
+        cmd: >
+          grep -rh NOPASSWD /etc/sudoers /etc/sudoers.d/ 2>/dev/null
+          | grep -v ^# | wc -l || echo 0
+      register: nopasswd_count
+      changed_when: false
+      failed_when: false
+      tags: discovery
+
+    # ── Collect disk usage ────────────────────────────────────────────────
+    - name: Collect disk usage
+      ansible.builtin.shell:
+        cmd: >
+          df -h --output=source,size,used,avail,pcent,target
+          | grep -v tmpfs | grep -v devtmpfs | tail -n +2
+      register: disk_usage
+      changed_when: false
+      failed_when: false
+      tags: discovery
+
+    # ── Compile and save record ───────────────────────────────────────────
+    - name: Compile complete discovery record
+      ansible.builtin.set_fact:
+        discovery_record:
+          host_profile:      "{{ host_profile }}"
+          network_profile:   "{{ network_profile }}"
+          running_services: >-
+            {{ ansible_facts.services | dict2items
+               | selectattr('value.state', 'equalto', 'running')
+               | map(attribute='key') | list }}
+          package_count:     "{{ ansible_facts.packages | length }}"
+          already_managed:   "{{ ansible_managed_file.stat.exists }}"
+          monitoring_agents: >-
+            {{ monitoring_agent_checks.results
+               | selectattr('stat.exists')
+               | map(attribute='item.name') | list }}
+          cm_agents: >-
+            {{ cm_agent_checks.results
+               | selectattr('stat.exists')
+               | map(attribute='item.name') | list }}
+          ssh_keys_total:    "{{ ssh_keys_count.stdout | int }}"
+          aide_installed:    "{{ aide_check.stat.exists }}"
+          auditd_running: >-
+            {{ ansible_facts.services.get('auditd.service', {}).get('state', 'unknown') == 'running' }}
+          nopasswd_sudo_count: "{{ nopasswd_count.stdout | int }}"
+          disk_usage:        "{{ disk_usage.stdout_lines | default([]) }}"
+          discovered_at:     "{{ ansible_date_time.iso8601 }}"
+          migration_id:      "{{ migration_id }}"
+      tags: discovery
+
+    - name: Save discovery record to control node
+      ansible.builtin.copy:
+        content: "{{ discovery_record | to_nice_json }}"
+        dest:    "{{ discovery_output_dir }}/{{ inventory_hostname }}.json"
+        mode:    "0644"
+      delegate_to: localhost
+      become: false
+      tags: discovery
+
+- name: Generate discovery summary report
+  hosts: localhost
+  gather_facts: true
+
+  vars:
+    migration_id:        "{{ migration_name }}-{{ ansible_date_time.date }}"
+    discovery_output_dir: "/tmp/migration_discovery/{{ migration_id }}"
+
+  tasks:
+    - name: Compile discovery summary
+      ansible.builtin.shell:
+        cmd: |
+          python3 << 'PYEOF'
+          import json, glob
+          files   = sorted(glob.glob('{{ discovery_output_dir }}/*.json'))
+          summary = {
+              'migration_id':     '{{ migration_id }}',
+              'total_hosts':      len(files),
+              'already_managed':  0,
+              'has_monitoring':   0,
+              'selinux_disabled': 0,
+              'os_breakdown':     {},
+              'hosts':            [],
+          }
+          for f in files:
+              d = json.load(open(f))
+              hp = d.get('host_profile', {})
+              os_ver = f"{hp.get('os','')} {hp.get('os_major','')}"
+              summary['os_breakdown'][os_ver] = summary['os_breakdown'].get(os_ver, 0) + 1
+              if d.get('already_managed'):  summary['already_managed'] += 1
+              if d.get('monitoring_agents'): summary['has_monitoring'] += 1
+              if hp.get('selinux_mode','') != 'enforcing': summary['selinux_disabled'] += 1
+              summary['hosts'].append({
+                  'hostname':   hp.get('hostname'),
+                  'os':         os_ver,
+                  'managed':    d.get('already_managed'),
+                  'monitoring': d.get('monitoring_agents'),
+              })
+          print(json.dumps(summary, indent=2))
+          PYEOF
+      register: summary_json
+      changed_when: false
+
+    - name: Save summary report
+      ansible.builtin.copy:
+        content: "{{ summary_json.stdout }}"
+        dest:    "{{ discovery_output_dir }}/SUMMARY.json"
+        mode:    "0644"
+
+    - name: Display discovery summary
+      ansible.builtin.debug:
+        msg: "{{ summary_json.stdout | from_json }}"

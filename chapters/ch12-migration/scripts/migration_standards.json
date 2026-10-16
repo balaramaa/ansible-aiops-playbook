@@ -1,0 +1,50 @@
+{
+  "_comment": "Migration target standards — Chapter 12",
+  "_author": "Balaramakrishna Alti",
+  "_github": "https://github.com/balaramaa/ansible-aiops-playbook",
+
+  "target_os": ["RedHat", "Rocky"],
+  "target_os_version": "9",
+  "min_os_major": 8,
+
+  "required_selinux": "enforcing",
+  "max_ssh_keys": 50,
+  "max_nopasswd_sudo": 2,
+
+  "required_packages": [
+    "chrony",
+    "audit",
+    "aide",
+    "rsyslog"
+  ],
+
+  "forbidden_packages": [
+    "telnet",
+    "rsh",
+    "ypserv",
+    "tftp"
+  ],
+
+  "required_services_running": [
+    "sshd",
+    "chronyd",
+    "auditd"
+  ],
+
+  "forbidden_services": [
+    "rsh.socket",
+    "rlogin.socket",
+    "telnet.socket"
+  ],
+
+  "compliance_gate_minimum": 90,
+  "compliance_gate_production": 95,
+
+  "monitoring_required": [
+    "node_exporter"
+  ],
+
+  "ansible_service_account": "ansible",
+  "migration_batch_size": 50,
+  "maintenance_window_days": [5, 6]
+}

@@ -1,0 +1,209 @@
+# playbooks/migration/phase4_execute.yml
+# Chapter 12, Listing 12-4 — Phase 4: Migration execution with validation gates
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Usage:
+#   # Dry run first
+#   ansible-playbook -i inventory/ \
+#     chapters/ch12-migration/playbooks/migration/phase4_execute.yml \
+#     --limit "{{ batch_hosts }}" \
+#     -e "batch_id=BATCH-00-PILOT migration_name=rms-integration" \
+#     --check --diff
+#
+#   # Execute migration
+#   ansible-playbook -i inventory/ \
+#     chapters/ch12-migration/playbooks/migration/phase4_execute.yml \
+#     --limit "{{ batch_hosts }}" \
+#     -e "batch_id=BATCH-00-PILOT migration_name=rms-integration"
+---
+- name: Phase 4 — Execute migration batch with validation gates
+  hosts: "{{ batch_hosts | default('acquisition_targets') }}"
+  become: true
+  gather_facts: true
+  serial:             "{{ migration_serial | default('10%') }}"
+  max_fail_percentage: "{{ max_fail_pct | default(5) }}"
+
+  vars:
+    migration_id:      "{{ migration_name }}-{{ ansible_date_time.date }}"
+    min_compliance:    "{{ compliance_threshold | default(90) }}"
+    backup_dir:        "/var/backups/migration/{{ migration_id }}"
+
+  pre_tasks:
+    - name: Record pre-migration state
+      ansible.builtin.set_fact:
+        pre_migration:
+          kernel:    "{{ ansible_kernel }}"
+          os:        "{{ ansible_distribution }} {{ ansible_distribution_version }}"
+          selinux:   "{{ ansible_selinux.status }}"
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+      tags: always
+
+    - name: Verify sudo access is working
+      ansible.builtin.command:
+        cmd: whoami
+      register: whoami_check
+      changed_when: false
+      failed_when:  whoami_check.stdout != "root"
+      tags: always
+
+    - name: Create pre-migration configuration backup
+      ansible.builtin.shell:
+        cmd: >
+          mkdir -p {{ backup_dir }} &&
+          tar czf {{ backup_dir }}/etc_backup.tar.gz /etc 2>/dev/null &&
+          echo "Backup complete: $(du -sh {{ backup_dir }}/etc_backup.tar.gz | cut -f1)"
+      changed_when: true
+      failed_when:  false
+      tags: backup
+
+    - name: Log migration start
+      ansible.builtin.lineinfile:
+        path:   /var/log/migration_audit.log
+        line: >
+          {{ ansible_date_time.iso8601 }} MIGRATION_START
+          batch={{ batch_id }}
+          host={{ inventory_hostname }}
+          os={{ ansible_distribution }}_{{ ansible_distribution_version }}
+        create: true
+        mode:   "0640"
+      tags: always
+
+  roles:
+    # Apply enterprise baseline (Chapter 3)
+    - role: linux_baseline
+      tags: baseline
+
+    # Apply CIS hardening (Chapter 5)
+    - role: cis_rhel9
+      tags: cis
+
+    # Deploy monitoring (Chapter 11)
+    - role: node_exporter
+      tags: monitoring
+
+    - role: promtail
+      tags: monitoring
+
+  post_tasks:
+    # ── Compliance gate ───────────────────────────────────────────────────
+    - name: Run post-migration OpenSCAP compliance scan
+      block:
+        - name: Execute compliance scan
+          ansible.builtin.command:
+            cmd: >
+              oscap xccdf eval
+              --profile xccdf_org.ssgproject.content_profile_cis_server_l1
+              --results /var/log/compliance/migration_{{ batch_id }}_{{ ansible_date_time.epoch }}.xml
+              --report /var/log/compliance/migration_{{ batch_id }}_{{ ansible_date_time.epoch }}.html
+              /usr/share/xml/scap/ssg/content/ssg-rl9-ds.xml
+          register: scap_result
+          failed_when: scap_result.rc not in [0, 2]
+          changed_when: false
+          when: ansible_facts.packages.get('scap-security-guide') is not none
+
+        - name: Extract compliance score from scan output
+          ansible.builtin.shell:
+            cmd: >
+              grep -oP 'Score: \K[0-9.]+' /var/log/compliance/migration_{{ batch_id }}_*.xml
+              | tail -1 || echo "0"
+          register: score_extract
+          changed_when: false
+          failed_when: false
+
+        - name: Set compliance score fact
+          ansible.builtin.set_fact:
+            post_migration_score: "{{ score_extract.stdout | float | round(2) }}"
+
+        - name: Enforce compliance gate
+          ansible.builtin.assert:
+            that: post_migration_score | float >= min_compliance | float
+            fail_msg: >
+              COMPLIANCE GATE FAILED on {{ inventory_hostname }}.
+              Score: {{ post_migration_score }}% (minimum: {{ min_compliance }}%).
+              Batch {{ batch_id }} will be halted. Review scan report:
+              /var/log/compliance/migration_{{ batch_id }}_*.html
+            success_msg: >
+              Compliance gate passed: {{ post_migration_score }}% >= {{ min_compliance }}%
+
+      rescue:
+        - name: ROLLBACK — restore pre-migration /etc backup
+          ansible.builtin.shell:
+            cmd: >
+              if [ -f {{ backup_dir }}/etc_backup.tar.gz ]; then
+                  tar xzf {{ backup_dir }}/etc_backup.tar.gz -C / &&
+                  systemctl daemon-reload &&
+                  systemctl reload sshd 2>/dev/null || true
+                  echo "Rollback complete"
+              else
+                  echo "No backup found at {{ backup_dir }}"
+              fi
+          failed_when: false
+          changed_when: true
+
+        - name: Log rollback event
+          ansible.builtin.lineinfile:
+            path:   /var/log/migration_audit.log
+            line: >
+              {{ ansible_date_time.iso8601 }} ROLLBACK
+              batch={{ batch_id }}
+              host={{ inventory_hostname }}
+              score={{ post_migration_score | default('unknown') }}
+            create: true
+            mode:   "0640"
+
+        - name: Fail to halt batch
+          ansible.builtin.fail:
+            msg: >
+              MIGRATION HALTED: Batch {{ batch_id }} failed compliance gate
+              on {{ inventory_hostname }}. Score: {{ post_migration_score | default('N/A') }}%.
+              Changes rolled back. Investigate before retrying.
+
+    # ── Post-migration checks ─────────────────────────────────────────────
+    - name: Verify SSH is still accessible
+      ansible.builtin.wait_for_connection:
+        timeout: 30
+      tags: verify
+
+    - name: Verify core services are running post-migration
+      ansible.builtin.service_facts:
+      tags: verify
+
+    - name: Assert critical services are running
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.services.get('sshd.service', {}).get('state', '') == 'running'
+          - ansible_facts.services.get('chronyd.service', {}).get('state', '') == 'running'
+          - ansible_facts.services.get('auditd.service', {}).get('state', '') == 'running'
+        fail_msg: "One or more critical services not running post-migration"
+        success_msg: "All critical services running post-migration"
+      tags: verify
+
+    # ── Register in Prometheus ────────────────────────────────────────────
+    - name: Register host as Prometheus scrape target
+      ansible.builtin.lineinfile:
+        path: >
+          /etc/prometheus/targets/nodes_migration_{{ batch_id }}.yml
+        line: "  - {{ ansible_default_ipv4.address }}:9100"
+        create: true
+        mode:   "0644"
+        insertafter: "^- targets:"
+      delegate_to: "{{ groups['prometheus_server'][0] }}"
+      failed_when: false
+      tags: monitoring
+
+    # ── Final audit record ────────────────────────────────────────────────
+    - name: Record successful migration
+      ansible.builtin.lineinfile:
+        path:   /var/log/migration_audit.log
+        line: >
+          {{ ansible_date_time.iso8601 }} MIGRATION_SUCCESS
+          batch={{ batch_id }}
+          host={{ inventory_hostname }}
+          pre_os={{ pre_migration.os }}
+          post_os={{ ansible_distribution }}_{{ ansible_distribution_version }}
+          compliance={{ post_migration_score | default('N/A') }}
+        create: true
+        mode:   "0640"
+      tags: always
