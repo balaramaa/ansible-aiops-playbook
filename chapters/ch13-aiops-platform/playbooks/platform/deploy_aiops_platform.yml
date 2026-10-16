@@ -1,0 +1,207 @@
+# playbooks/platform/deploy_aiops_platform.yml
+# Chapter 13, Listing 13-6 — Deploy the complete AIOps platform
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# Prerequisites:
+#   - Redis 7+ on aiops_platform_server
+#   - Python 3.11+ on aiops_platform_server
+#   - Prometheus server configured (Chapter 11)
+#   - EDA server running (Chapter 7)
+#
+# Usage:
+#   ansible-playbook -i inventory/ \
+#     chapters/ch13-aiops-platform/playbooks/platform/deploy_aiops_platform.yml
+#
+#   # Deploy specific components
+#   ansible-playbook -i inventory/ \
+#     chapters/ch13-aiops-platform/playbooks/platform/deploy_aiops_platform.yml \
+#     --tags api
+---
+- name: Deploy AIOps platform infrastructure
+  hosts: aiops_platform_server
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Install Redis event bus
+      ansible.builtin.dnf:
+        name:  redis
+        state: present
+      tags: [platform, redis]
+
+    - name: Enable and start Redis
+      ansible.builtin.service:
+        name:    redis
+        state:   started
+        enabled: true
+      tags: [platform, redis]
+
+    - name: Create AIOps event stream and consumer group
+      ansible.builtin.command:
+        cmd: redis-cli XGROUP CREATE aiops:events aiops-consumers $ MKSTREAM
+      register: stream_init
+      changed_when: stream_init.rc == 0
+      failed_when: >
+        stream_init.rc != 0 and
+        "BUSYGROUP" not in stream_init.stderr | default('')
+      tags: [platform, redis]
+
+    - name: Install platform Python dependencies
+      ansible.builtin.pip:
+        name:
+          - fastapi>=0.110.0
+          - uvicorn[standard]>=0.27.0
+          - redis>=5.0.0
+          - pydantic>=2.0.0
+          - openai>=1.0.0
+          - anthropic>=0.20.0
+          - requests>=2.31.0
+        state: present
+      tags: [platform, api]
+
+    - name: Create platform directory
+      ansible.builtin.file:
+        path:  /opt/aiops-platform
+        state: directory
+        owner: root
+        group: root
+        mode:  "0755"
+      tags: platform
+
+    - name: Deploy platform scripts
+      ansible.builtin.copy:
+        src:  "{{ item }}"
+        dest: /opt/aiops-platform/
+        mode: "0755"
+      loop:
+        - chapters/ch13-aiops-platform/scripts/event_bus.py
+        - chapters/ch13-aiops-platform/scripts/ai_decision_engine.py
+        - chapters/ch13-aiops-platform/scripts/platform_api.py
+        - chapters/ch13-aiops-platform/scripts/platform_metrics.py
+      tags: [platform, api]
+
+    - name: Deploy platform API systemd service
+      ansible.builtin.copy:
+        dest:  /etc/systemd/system/aiops-api.service
+        content: |
+          [Unit]
+          Description=AIOps Platform API
+          After=network-online.target redis.service
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=root
+          WorkingDirectory=/opt/aiops-platform
+          Environment=PYTHONPATH=/opt/aiops-platform
+          Environment=REDIS_URL=redis://localhost:6379
+          ExecStart=/usr/bin/uvicorn platform_api:app \
+              --host 0.0.0.0 --port 8080 --workers 2
+          Restart=on-failure
+          RestartSec=10s
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: "0644"
+      notify:
+        - daemon-reload
+        - restart aiops-api
+      tags: [platform, api]
+
+    - name: Deploy AI decision engine systemd service
+      ansible.builtin.copy:
+        dest:  /etc/systemd/system/aiops-engine.service
+        content: |
+          [Unit]
+          Description=AIOps AI Decision Engine
+          After=network-online.target redis.service aiops-api.service
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=root
+          WorkingDirectory=/root/ansible-aiops-playbook
+          Environment=PYTHONPATH=/opt/aiops-platform
+          Environment=REDIS_URL=redis://localhost:6379
+          ExecStart=/usr/bin/python3 /opt/aiops-platform/ai_decision_engine.py
+          Restart=on-failure
+          RestartSec=15s
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: "0644"
+      notify:
+        - daemon-reload
+        - restart aiops-engine
+      tags: [platform, engine]
+
+    - name: Open platform API port in firewall
+      ansible.posix.firewalld:
+        port:      "8080/tcp"
+        permanent: true
+        state:     enabled
+        immediate: true
+      tags: [platform, firewall]
+
+    - name: Enable and start AIOps platform services
+      ansible.builtin.service:
+        name:    "{{ item }}"
+        state:   started
+        enabled: true
+      loop:
+        - aiops-api
+        - aiops-engine
+      tags: platform
+
+    - name: Verify platform API is responding
+      ansible.builtin.uri:
+        url:    http://localhost:8080/health
+        status_code: 200
+      register: health_check
+      retries: 5
+      delay:   5
+      tags: [platform, verify]
+
+    - name: Display platform health
+      ansible.builtin.debug:
+        msg: "{{ health_check.json }}"
+      tags: [platform, verify]
+
+  handlers:
+    - name: daemon-reload
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: restart aiops-api
+      ansible.builtin.service:
+        name:  aiops-api
+        state: restarted
+
+    - name: restart aiops-engine
+      ansible.builtin.service:
+        name:  aiops-engine
+        state: restarted
+
+
+- name: Configure Prometheus Alertmanager to route to platform
+  hosts: prometheus_server
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Configure Alertmanager to forward to platform API
+      ansible.builtin.template:
+        src:  alertmanager_platform.yml.j2
+        dest: /etc/alertmanager/alertmanager.yml
+        mode: "0644"
+        validate: amtool check-config %s
+      notify: reload alertmanager
+      tags: [platform, prometheus]
+
+  handlers:
+    - name: reload alertmanager
+      ansible.builtin.service:
+        name:  alertmanager
+        state: reloaded

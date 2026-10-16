@@ -1,0 +1,74 @@
+# eda-rulebooks/platform_integration.yml
+# Chapter 13 — EDA rulebook that forwards all events to the AIOps platform bus
+#
+# Author : Balaramakrishna Alti
+# GitHub : https://github.com/balaramaa/ansible-aiops-playbook
+#
+# This rulebook bridges Chapter 7's self-healing EDA events into the
+# unified AIOps platform event bus (Chapter 13).
+#
+# Usage:
+#   ansible-rulebook \
+#     --rulebook chapters/ch13-aiops-platform/eda-rulebooks/platform_integration.yml \
+#     --inventory inventory/ \
+#     --verbose
+---
+- name: AIOps Platform Event Integration
+  hosts: all
+
+  sources:
+    # Prometheus Alertmanager webhook
+    - ansible.eda.alertmanager:
+        host: 0.0.0.0
+        port: 8000
+
+    # Kafka stream for application events
+    - ansible.eda.kafka:
+        host: "{{ kafka_host | default('localhost') }}"
+        port: 9092
+        topic: infra-events
+        group_id: eda-platform-integration
+
+  rules:
+    # ── Forward all Prometheus alerts to platform API ──────────────────────
+    - name: Forward Prometheus alerts to AIOps platform
+      condition: event.alert.status is defined
+      action:
+        run_job_template:
+          name: "Platform Event Publisher"
+          organization: "Default"
+          extra_vars:
+            event_type:     "alert"
+            hostname:       "{{ event.alert.labels.instance | split(':') | first }}"
+            severity:       "{{ event.alert.labels.severity | default('medium') }}"
+            alert_name:     "{{ event.alert.labels.alertname }}"
+            alert_status:   "{{ event.alert.status }}"
+            auto_remediate: "{{ event.alert.status == 'firing' }}"
+
+    # ── Forward compliance drift events ────────────────────────────────────
+    - name: Forward compliance drift to platform
+      condition: >
+        event.payload.event_type == "compliance_drift"
+      action:
+        run_playbook:
+          name: playbooks/platform/publish_event.yml
+          extra_vars:
+            platform_event_type: "compliance_drift"
+            platform_hostname:   "{{ event.payload.hostname }}"
+            platform_severity:   "high"
+            platform_payload:    "{{ event.payload | to_json }}"
+
+    # ── Forward security threat events ─────────────────────────────────────
+    - name: Forward security threats to platform (critical path)
+      condition: >
+        event.payload.event_type == "security_threat" and
+        event.payload.threat_level in ["critical", "high"]
+      action:
+        run_playbook:
+          name: playbooks/platform/publish_event.yml
+          extra_vars:
+            platform_event_type: "security_threat"
+            platform_hostname:   "{{ event.payload.hostname }}"
+            platform_severity:   "{{ event.payload.threat_level }}"
+            platform_payload:    "{{ event.payload | to_json }}"
+            auto_remediate:      "{{ event.payload.auto_respond | default(false) }}"
