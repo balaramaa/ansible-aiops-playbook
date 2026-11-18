@@ -70,8 +70,12 @@ pipeline {
         }
 
         stage('Stage 3: AI Code Review') {
-            when { changeRequest() }
+            // ADVISORY: LLM output is non-deterministic, so this stage only reports
+            // findings to the log and never fails the build. Also a data-governance
+            // decision: playbook text is sent to the configured LLM endpoint.
+            when { allOf { changeRequest(); expression { return env.AI_REVIEW_ENABLED == 'true' } } }
             steps {
+              catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
                 sh '''
                     pip3 install -q openai anthropic pyyaml requests
                     git diff --name-only origin/main...HEAD \
@@ -81,9 +85,10 @@ pipeline {
                         | while read f; do
                             echo "=== AI Review: $f ==="
                             python3 chapters/ch04-llm-playbook-generation/scripts/review_playbook.py \
-                              --playbook "$f" --fail-on high || exit 1
+                              --playbook "$f" || true
                           done
                 '''
+              }
             }
         }
 
@@ -132,7 +137,7 @@ pipeline {
         }
 
         stage('Stage 6: Deploy Staging') {
-            when { branch 'develop' }
+            when { branch 'main' }
             steps {
                 sh """
                     ansible-playbook -i inventory/ site.yml \
@@ -145,7 +150,7 @@ pipeline {
         }
 
         stage('Compliance Gate: Staging') {
-            when { branch 'develop' }
+            when { branch 'main' }
             steps {
                 sh """
                     ansible-playbook -i inventory/ \

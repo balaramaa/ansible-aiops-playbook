@@ -6,7 +6,7 @@
 ---
 - name: Audit all UID 0 accounts
   ansible.builtin.shell:
-    cmd: awk -F: '($3 == 0) {print $1}' /etc/passwd
+    cmd: "awk -F: '($3 == 0) {print $1}' /etc/passwd"
   register: uid_zero_accounts
   changed_when: false
   tags: pam
@@ -20,6 +20,31 @@
       CRITICAL: Multiple UID 0 accounts on {{ inventory_hostname }}:
       {{ uid_zero_accounts.stdout_lines }}
       Investigate immediately.
+  tags: pam
+
+- name: Find sudoers drop-in files
+  ansible.builtin.find:
+    paths: /etc/sudoers.d
+    file_type: file
+  register: sudoers_files
+  tags: pam
+
+- name: Report NOPASSWD sudo entries
+  ansible.builtin.shell:
+    cmd: grep -rnE '^[^#]*NOPASSWD' /etc/sudoers /etc/sudoers.d || true
+  register: nopasswd_entries
+  changed_when: false
+  tags: pam
+
+- name: Comment out unauthorized NOPASSWD entries (opt-in, validated)
+  ansible.builtin.replace:
+    path: "{{ item }}"
+    regexp: '^(?!#)(?!\s*(ansible|root)\b)(.*NOPASSWD.*)$'
+    replace: '# REMOVED by Ansible PAM governance: \2'
+    backup: true
+    validate: /usr/sbin/visudo -cf %s
+  loop: "{{ ['/etc/sudoers'] + (sudoers_files.files | map(attribute='path') | list) }}"
+  when: pam_enforce_nopasswd_policy | default(false) | bool
   tags: pam
 
 - name: Lock inactive system accounts

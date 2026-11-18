@@ -46,7 +46,7 @@ def compute_platform_metrics(days: int = 30) -> dict:
             "auto_resolved":     0,
             "escalated":         0,
             "auto_resolve_rate": "0%",
-            "avg_mttr_seconds":  0,
+            "avg_mttr_seconds":  None,
         },
         "compliance":     {
             "avg_score":          0.0,
@@ -86,7 +86,7 @@ def compute_platform_metrics(days: int = 30) -> dict:
         if total > 0:
             rate = resolved / total * 100
             metrics["self_healing"]["auto_resolve_rate"] = f"{rate:.1f}%"
-            metrics["self_healing"]["avg_mttr_seconds"]  = 90  # proxy
+            metrics["self_healing"]["avg_mttr_seconds"]  = None  # not measured here; run ch07/scripts/mttr_analyzer.py
 
     # ── Compliance metrics ────────────────────────────────────────────────────
     if compliance.exists():
@@ -174,7 +174,7 @@ def print_metrics(metrics: dict) -> None:
     print(f"  Total events     : {sh['total_events']}")
     print(f"  Auto-resolved    : {sh['auto_resolved']} ({sh['auto_resolve_rate']})")
     print(f"  Escalated        : {sh['escalated']}")
-    print(f"  Avg MTTR         : {sh['avg_mttr_seconds']}s (auto-remediated)")
+    print(f"  Avg MTTR         : {str(sh['avg_mttr_seconds']) + 's' if sh['avg_mttr_seconds'] is not None else 'not measured (see ch07 mttr_analyzer.py)'}")
 
     co = metrics["compliance"]
     print(f"\nCompliance:")

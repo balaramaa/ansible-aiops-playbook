@@ -12,8 +12,20 @@
   vars:
     incident_id:      "MEM-{{ ansible_date_time.epoch }}"
     memory_threshold: 90
+    allow_cache_drop: false   # opt-in mitigation; causes I/O spike + cold caches
 
   tasks:
+    - name: Log incident start (used by mttr_analyzer.py)
+      ansible.builtin.lineinfile:
+        path: /var/log/self_healing_audit.log
+        line: >-
+          {{ ansible_date_time.iso8601 }} incident={{ incident_id }}
+          type=HighMemoryUsage START host={{ inventory_hostname }}
+          detected={{ alert_starts_at | default(ansible_date_time.iso8601) }}
+        create: true
+        mode: "0640"
+      tags: always
+
     - name: Capture pre-remediation memory state
       ansible.builtin.command:
         cmd: free -h
@@ -28,10 +40,13 @@
       changed_when: false
       tags: diagnostics
 
-    - name: Drop page cache (safe, non-destructive)
+    # MITIGATION, not a fix: dropping caches causes an I/O spike and cold
+    # caches while they refill, and does not cure a leak. Off by default.
+    - name: Mitigation (opt-in) - drop page cache
       ansible.builtin.shell:
         cmd: sync && echo 3 > /proc/sys/vm/drop_caches
       changed_when: true
+      when: allow_cache_drop | bool
       tags: remediate
 
     - name: Check memory after cache drop

@@ -17,7 +17,7 @@ name: Ansible Infrastructure CI/CD
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
     paths:
       - "roles/**"
       - "playbooks/**"
@@ -75,24 +75,28 @@ jobs:
         with:
           args: "--profile production"
 
-  # ── Stage 3: AI Code Review (PR only) ───────────────────────────────────
+  # ── Stage 3: AI Code Review (ADVISORY — never blocks the pipeline) ──────
+  # LLM output is non-deterministic, so it must not be a hard gate. Findings
+  # are posted to the job summary for the human reviewer. Data governance:
+  # the review sends playbook text to an LLM. Enable it only where policy
+  # allows (repository variable AI_REVIEW_ENABLED=true) and point it at an
+  # approved endpoint (e.g. a private/internal model) via the Chapter 4
+  # provider abstraction. Never put secrets or inventory data in reviewed files.
   ai-review:
     runs-on: ubuntu-latest
-    name: "Stage 3: AI Security Review"
+    name: "Stage 3: AI Review (advisory)"
     needs: lint
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' && vars.AI_REVIEW_ENABLED == 'true'
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install AI review dependencies
         run: pip install openai anthropic pyyaml requests
-
       - name: Find changed Ansible files
         id: changed
         run: |
@@ -101,21 +105,18 @@ jobs:
             | grep -vE "^(\.github|molecule|tests)" \
             | head -20 | tr "\n" " ")
           echo "files=$FILES" >> $GITHUB_OUTPUT
-          echo "Changed files: $FILES"
-
-      - name: Run AI playbook review
+      - name: Run AI playbook review (report only)
         if: steps.changed.outputs.files != ''
         env:
+          LLM_PROVIDER:      ${{ vars.LLM_PROVIDER }}
           OPENAI_API_KEY:    ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          EXIT=0
           for f in ${{ steps.changed.outputs.files }}; do
-            echo "=== Reviewing: $f ==="
+            echo "### AI review: $f" >> "$GITHUB_STEP_SUMMARY"
             python3 chapters/ch04-llm-playbook-generation/scripts/review_playbook.py \
-              --playbook "$f" --fail-on high || EXIT=1
+              --playbook "$f" >> "$GITHUB_STEP_SUMMARY" || true
           done
-          exit $EXIT
 
   # ── Stage 4: Molecule Tests ──────────────────────────────────────────────
   molecule:
@@ -177,104 +178,144 @@ jobs:
         with:
           sarif_file: checkov-results.sarif
 
-  # ── Stage 6: Deploy to Staging ───────────────────────────────────────────
+  # ── Stage 6: Deploy to Staging (after merge to main) ───────────────────
   deploy-staging:
-    runs-on: ubuntu-latest
+    # Self-hosted runner INSIDE the network: GitHub-hosted runners cannot
+    # reach internal servers, and a runner label limits which jobs may use it.
+    runs-on: [self-hosted, linux, ansible-staging]
     name: "Stage 6: Deploy to Staging"
-    needs: [molecule, security-scan, ai-review]
+    needs: [molecule, security-scan]
     if: |
-      github.ref == 'refs/heads/develop' &&
+      github.ref == 'refs/heads/main' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-    environment: staging
+    environment:
+      name: staging
+
+    permissions:
+      id-token: write    # OIDC token: no long-lived cloud or Vault secret stored
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Install Ansible and collections
         run: |
+          python3 -m venv "$RUNNER_TEMP/venv"
+          . "$RUNNER_TEMP/venv/bin/activate"
           pip install ansible-core==2.15.* boto3 requests
           ansible-galaxy collection install -r requirements.yml
 
-      - name: Configure SSH for Ansible
+      # GitHub's OIDC token is exchanged for a short-lived Vault token.
+      # Only this repository, this environment and this ref may use the role.
+      - name: Authenticate to Vault with OIDC (no stored credentials)
+        uses: hashicorp/vault-action@v3
+        with:
+          url: https://vault.company.com
+          method: jwt
+          role: github-ansible-staging
+          exportToken: true
+          secrets: |
+            secret/data/ansible/staging vault_password | ANSIBLE_VAULT_PASSWORD
+
+      # Ephemeral key signed by Vault's SSH CA, valid for 15 minutes.
+      - name: Issue short-lived SSH certificate
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.ANSIBLE_SSH_KEY }}" > ~/.ssh/ansible_key
-          chmod 600 ~/.ssh/ansible_key
-          ssh-keyscan -H staging.company.com >> ~/.ssh/known_hosts 2>/dev/null || true
+          ssh-keygen -q -t ed25519 -N "" -f "$RUNNER_TEMP/id_ansible"
+          vault write -field=signed_key ssh/sign/ansible-staging \
+            public_key=@"$RUNNER_TEMP/id_ansible.pub" \
+            valid_principals=ansible ttl=15m \
+            > "$RUNNER_TEMP/id_ansible-cert.pub"
 
       - name: Deploy to staging
-        env:
-          ANSIBLE_VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD }}
         run: |
+          . "$RUNNER_TEMP/venv/bin/activate"
           ansible-playbook -i inventory/ site.yml \
             --limit staging \
-            --private-key ~/.ssh/ansible_key \
-            --vault-password-file <(echo "$ANSIBLE_VAULT_PASSWORD") \
+            --private-key "$RUNNER_TEMP/id_ansible" \
+            --vault-password-file <(printf '%s' "$ANSIBLE_VAULT_PASSWORD") \
             -e "deployment_id=${{ github.sha }}"
 
       - name: Compliance gate — staging
-        env:
-          ANSIBLE_VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD }}
         run: |
+          . "$RUNNER_TEMP/venv/bin/activate"
           ansible-playbook -i inventory/ \
             chapters/ch05-compliance-governance/playbooks/compliance_check.yml \
             --limit staging \
-            --private-key ~/.ssh/ansible_key \
-            --vault-password-file <(echo "$ANSIBLE_VAULT_PASSWORD") \
+            --private-key "$RUNNER_TEMP/id_ansible" \
+            --vault-password-file <(printf '%s' "$ANSIBLE_VAULT_PASSWORD") \
             -e "min_compliance_score=90"
 
-  # ── Stage 7: Deploy to Production ───────────────────────────────────────
+      - name: Remove ephemeral credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/id_ansible*
+
+  # ── Stage 7: Deploy to Production (manual approval, after staging) ─────
   deploy-production:
-    runs-on: ubuntu-latest
+    # Self-hosted runner INSIDE the network: GitHub-hosted runners cannot
+    # reach internal servers, and a runner label limits which jobs may use it.
+    runs-on: [self-hosted, linux, ansible-prod]
     name: "Stage 7: Deploy to Production"
     needs: deploy-staging
     if: github.ref == 'refs/heads/main'
     environment:
       name: production
-      # Configure required reviewers at:
-      # Settings → Environments → production → Required reviewers
+      # Required reviewers: Settings → Environments → production
+    permissions:
+      id-token: write    # OIDC token: no long-lived cloud or Vault secret stored
+      contents: read
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
       - name: Install Ansible and collections
         run: |
-          pip install ansible-core==2.15.* boto3
+          python3 -m venv "$RUNNER_TEMP/venv"
+          . "$RUNNER_TEMP/venv/bin/activate"
+          pip install ansible-core==2.15.* boto3 requests
           ansible-galaxy collection install -r requirements.yml
 
-      - name: Configure SSH for production
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.ANSIBLE_PROD_SSH_KEY }}" > ~/.ssh/prod_key
-          chmod 600 ~/.ssh/prod_key
+      # GitHub's OIDC token is exchanged for a short-lived Vault token.
+      # Only this repository, this environment and this ref may use the role.
+      - name: Authenticate to Vault with OIDC (no stored credentials)
+        uses: hashicorp/vault-action@v3
+        with:
+          url: https://vault.company.com
+          method: jwt
+          role: github-ansible-production
+          exportToken: true
+          secrets: |
+            secret/data/ansible/production vault_password | ANSIBLE_VAULT_PASSWORD
 
-      - name: Rolling deployment to production (10% batches)
-        env:
-          ANSIBLE_VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD_PROD }}
+      # Ephemeral key signed by Vault's SSH CA, valid for 15 minutes.
+      - name: Issue short-lived SSH certificate
         run: |
+          ssh-keygen -q -t ed25519 -N "" -f "$RUNNER_TEMP/id_ansible"
+          vault write -field=signed_key ssh/sign/ansible-production \
+            public_key=@"$RUNNER_TEMP/id_ansible.pub" \
+            valid_principals=ansible ttl=15m \
+            > "$RUNNER_TEMP/id_ansible-cert.pub"
+
+      - name: Deploy to production
+        run: |
+          . "$RUNNER_TEMP/venv/bin/activate"
           ansible-playbook -i inventory/ site.yml \
             --limit production \
-            --private-key ~/.ssh/prod_key \
-            --vault-password-file <(echo "$ANSIBLE_VAULT_PASSWORD") \
-            -e "serial=10%" \
-            -e "deployment_id=${{ github.sha }}"
+            --private-key "$RUNNER_TEMP/id_ansible" \
+            --vault-password-file <(printf '%s' "$ANSIBLE_VAULT_PASSWORD") \
+            -e "deployment_id=${{ github.sha }}" \
+            -e "serial=10%"
 
-      - name: Compliance gate — production (95% threshold)
-        env:
-          ANSIBLE_VAULT_PASSWORD: ${{ secrets.VAULT_PASSWORD_PROD }}
+      - name: Compliance gate — production
         run: |
+          . "$RUNNER_TEMP/venv/bin/activate"
           ansible-playbook -i inventory/ \
             chapters/ch05-compliance-governance/playbooks/compliance_check.yml \
             --limit production \
-            --private-key ~/.ssh/prod_key \
-            --vault-password-file <(echo "$ANSIBLE_VAULT_PASSWORD") \
+            --private-key "$RUNNER_TEMP/id_ansible" \
+            --vault-password-file <(printf '%s' "$ANSIBLE_VAULT_PASSWORD") \
             -e "min_compliance_score=95"
+
+      - name: Remove ephemeral credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP"/id_ansible*
 
       - name: Notify Slack — deployment success
         if: success()

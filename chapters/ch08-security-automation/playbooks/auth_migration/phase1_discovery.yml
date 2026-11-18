@@ -19,35 +19,64 @@
   gather_facts: true
 
   tasks:
-    - name: Collect current authentication configuration
-      ansible.builtin.shell:
-        cmd: |
-          python3 -c "
-          import json, subprocess, os
-          config = {
-              'hostname': '$(hostname -f)',
-              'os': '{{ ansible_distribution }} {{ ansible_distribution_version }}',
-              'pam_sshd_md5': subprocess.run(['md5sum','/etc/pam.d/sshd'],
-                  capture_output=True,text=True).stdout.split()[0] if os.path.exists('/etc/pam.d/sshd') else None,
-              'nsswitch_passwd': open('/etc/nsswitch.conf').read()
-                  .split('passwd:')[1].split('\n')[0].strip()
-                  if 'passwd:' in open('/etc/nsswitch.conf').read() else 'unknown',
-              'sssd_running': subprocess.run(['systemctl','is-active','sssd'],
-                  capture_output=True).returncode == 0,
-              'sssd_installed': os.path.exists('/etc/sssd/sssd.conf'),
-              'ldap_configured': 'ldap' in open('/etc/nsswitch.conf').read(),
-              'freeipa_enrolled': os.path.exists('/etc/ipa/default.conf'),
-              'authorized_keys_count': int(subprocess.run(
-                  ['bash','-c','find /home /root -name authorized_keys 2>/dev/null | wc -l'],
-                  capture_output=True,text=True).stdout.strip()),
-              'sudo_nopasswd_count': int(subprocess.run(
-                  ['bash','-c','grep -r NOPASSWD /etc/sudoers /etc/sudoers.d/ 2>/dev/null | grep -v ^# | wc -l'],
-                  capture_output=True,text=True).stdout.strip()),
-          }
-          print(json.dumps(config, indent=2))
-          "
-      register: auth_config
+    - name: Hash PAM sshd configuration
+      ansible.builtin.stat:
+        path: /etc/pam.d/sshd
+        checksum_algorithm: sha256
+      register: pam_sshd
+      tags: discovery
+
+    - name: Read nsswitch passwd source
+      ansible.builtin.command:
+        cmd: grep -E '^passwd:' /etc/nsswitch.conf
+      register: nss_passwd
       changed_when: false
+      failed_when: false
+      tags: discovery
+
+    - name: Check SSSD service state
+      ansible.builtin.command:
+        cmd: systemctl is-active sssd
+      register: sssd_state
+      changed_when: false
+      failed_when: false
+      tags: discovery
+
+    - name: Check FreeIPA enrolment
+      ansible.builtin.stat:
+        path: /etc/ipa/default.conf
+      register: ipa_conf
+      tags: discovery
+
+    - name: Count authorized_keys files
+      ansible.builtin.find:
+        paths: [/home, /root]
+        patterns: authorized_keys
+        recurse: true
+      register: ak_files
+      tags: discovery
+
+    - name: Count NOPASSWD sudo entries
+      ansible.builtin.shell:
+        cmd: grep -rhE '^[^#]*NOPASSWD' /etc/sudoers /etc/sudoers.d 2>/dev/null | wc -l
+      register: nopasswd_count
+      changed_when: false
+      failed_when: false
+      tags: discovery
+
+    # Build the record as a dictionary and let Ansible serialise it, so the
+    # JSON is always valid (no hand-written echo lines or trailing commas).
+    - name: Build discovery record
+      ansible.builtin.set_fact:
+        auth_config:
+          hostname: "{{ inventory_hostname }}"
+          pam_sshd_sha256: "{{ pam_sshd.stat.checksum | default('') }}"
+          nsswitch_passwd: "{{ nss_passwd.stdout | default('') | trim }}"
+          sssd_running: "{{ (sssd_state.rc | default(1)) == 0 }}"
+          ldap_configured: "{{ 'ldap' in (nss_passwd.stdout | default('')) }}"
+          freeipa_enrolled: "{{ ipa_conf.stat.exists }}"
+          authorized_keys_count: "{{ ak_files.matched | int }}"
+          sudo_nopasswd_count: "{{ nopasswd_count.stdout | trim | int }}"
       tags: discovery
 
     - name: Ensure discovery output directory exists
@@ -62,19 +91,17 @@
 
     - name: Save discovery results locally
       ansible.builtin.copy:
-        content: "{{ auth_config.stdout }}"
-        dest:    "/tmp/auth_discovery/{{ inventory_hostname }}.json"
+        content: "{{ auth_config | to_nice_json }}"
+        dest: "/tmp/auth_discovery/{{ inventory_hostname }}.json"
+        mode: "0644"
       delegate_to: localhost
       become: false
       tags: discovery
 
     - name: Assess migration readiness
       ansible.builtin.set_fact:
-        migration_ready: >-
-          {{ (auth_config.stdout | from_json).sssd_running | bool or
-             (auth_config.stdout | from_json).ldap_configured | bool }}
-        already_migrated: >-
-          {{ (auth_config.stdout | from_json).freeipa_enrolled | bool }}
+        migration_ready: "{{ (auth_config.sssd_running | bool) or (auth_config.ldap_configured | bool) }}"
+        already_migrated: "{{ auth_config.freeipa_enrolled | bool }}"
       tags: discovery
 
     - name: Flag servers needing manual assessment
@@ -82,7 +109,7 @@
         msg: >
           ⚠ {{ inventory_hostname }} may need manual assessment:
           no standard auth configuration (SSSD/LDAP) detected.
-          Check: {{ auth_config.stdout | from_json }}
+          Check: {{ auth_config }}
       when: not migration_ready | bool and not already_migrated | bool
       tags: discovery
 

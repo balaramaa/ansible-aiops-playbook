@@ -99,10 +99,10 @@
   tags: [cis, cis_l2, umask]
 
 # ── Account lockout (faillock) ──────────────────────────────────────────────
-- name: "CIS L2 | Configure account lockout policy"
+- name: "CIS L2 | Configure account lockout policy (key = value settings)"
   ansible.builtin.lineinfile:
     path: /etc/security/faillock.conf
-    regexp: "^#?{{ item.key }}"
+    regexp: "^#?\\s*{{ item.key }}\\b"
     line: "{{ item.key }} = {{ item.value }}"
     create: true
     owner: root
@@ -112,7 +112,19 @@
     - { key: deny,          value: "5" }
     - { key: fail_interval, value: "900" }
     - { key: unlock_time,   value: "600" }
-    - { key: audit,         value: "" }
+  tags: [cis, cis_l2, pam, lockout]
+
+# audit and silent are boolean flags: they take NO value, so the line is the bare word.
+- name: "CIS L2 | Enable faillock flags (audit, silent)"
+  ansible.builtin.lineinfile:
+    path: /etc/security/faillock.conf
+    regexp: "^#?\\s*{{ item }}\\s*$"
+    line: "{{ item }}"
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [audit, silent]
   tags: [cis, cis_l2, pam, lockout]
 
 # ── Session limits ──────────────────────────────────────────────────────────
